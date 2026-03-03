@@ -28,6 +28,8 @@ const CRASH_SPEED_THRESHOLD = 50;
 const COLLISION_Z_RANGE = 250;
 const COLLISION_Z_OFFSET = 300;
 const COLLISION_PLAYER_CAR_X = 0.3;
+/** Z-Reichweite für Kollision mit statischen Sprites (Bäume, Gebäude, …) */
+const COLLISION_STATIC_Z_RANGE = 280;
 
 // Seitenstreifen (ab |playerX| > ROAD_EDGE)
 const ROAD_EDGE = 1.1;
@@ -35,7 +37,7 @@ const SHOULDER_MAX_SPEED = 80;
 const SHOULDER_ACCEL = 0.2;
 
 // Lenkung & Kurven
-const CURVE_FORCE_DIVISOR = 12000;
+const CURVE_FORCE_DIVISOR = 24000;
 const STEERING_FACTOR = 0.032;
 // Fliehkraft erst ab dieser Geschwindigkeit voll (darunter linear abgeschwächt), damit man aus dem Grünstreifen rauskommt
 const CURVE_FORCE_SPEED_THRESHOLD = 60;
@@ -44,6 +46,17 @@ const STEERING_MIN_FACTOR = 0.25;
 
 // Schubabschaltung (kein Gas): Verzögerung pro Frame
 const COAST_DECEL = 0.4;
+
+// --- Getriebe (manuell) ---
+const NUM_GEARS = 6;
+/** Maximalgeschwindigkeit pro Gang (nur im höchsten Gang wird maxSpeed erreicht) */
+const GEAR_MAX_SPEEDS = [45, 90, 135, 180, 215, 250];
+/** Unterhalb dieser Geschwindigkeit (km/h) im jeweiligen Gang nur stark reduzierte Beschleunigung („nicht anfahren“) */
+const GEAR_MIN_SPEEDS = [0, 18, 38, 58, 85, 115];
+const RPM_REDLINE = 7000;
+const RPM_IDLE = 800;
+
+let currentGear = 1;
 
 let segments = [];
 let cars = [];
@@ -55,7 +68,78 @@ let lastLapTime = 0;
 let lapStartTime = Date.now();
 
 let keys = { ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false };
+
+// --- Motorsound (Web Audio API, prozedural) ---
+let engineSoundReady = false;
+let engineGainNode = null;
+let engineOsc1 = null;
+let engineOsc2 = null;
+let engineFilter = null;
+
+function startEngineSound() {
+    if (engineSoundReady) return;
+    try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return;
+        const ctx = new Ctx();
+        if (ctx.state === 'suspended') ctx.resume();
+
+        engineGainNode = ctx.createGain();
+        engineGainNode.gain.value = 0;
+        engineGainNode.connect(ctx.destination);
+
+        engineOsc1 = ctx.createOscillator();
+        engineOsc1.type = 'sawtooth';
+        engineOsc1.frequency.value = 40;
+        engineOsc1.connect(engineGainNode);
+        engineOsc1.start(0);
+
+        engineOsc2 = ctx.createOscillator();
+        engineOsc2.type = 'square';
+        engineOsc2.frequency.value = 60;
+        const osc2Gain = ctx.createGain();
+        osc2Gain.gain.value = 0.25;
+        engineOsc2.connect(osc2Gain);
+        osc2Gain.connect(engineGainNode);
+        engineOsc2.start(0);
+
+        engineFilter = ctx.createBiquadFilter();
+        engineFilter.type = 'lowpass';
+        engineFilter.frequency.value = 400;
+        engineFilter.Q.value = 0.7;
+        engineGainNode.disconnect();
+        engineGainNode.connect(engineFilter);
+        engineFilter.connect(ctx.destination);
+
+        engineSoundReady = true;
+    } catch (_) { engineSoundReady = false; }
+}
+
+function updateEngineSound(rpm, throttle) {
+    if (!engineSoundReady || !engineGainNode || !engineOsc1 || !engineOsc2) return;
+    const baseFreq = 0.012 * rpm + 25;
+    engineOsc1.frequency.setTargetAtTime(baseFreq, 0, 0.02);
+    engineOsc2.frequency.setTargetAtTime(baseFreq * 1.5, 0, 0.02);
+    if (engineFilter) engineFilter.frequency.setTargetAtTime(200 + 0.04 * rpm, 0, 0.02);
+    const vol = isCrashed ? 0 : (0.08 + 0.12 * throttle + 0.002 * (rpm / 1000));
+    engineGainNode.gain.setTargetAtTime(Math.min(0.35, vol), 0, 0.03);
+}
+
 window.addEventListener('keydown', e => {
+    startEngineSound();
+    if (e.code === 'KeyQ') {
+        if (currentGear < NUM_GEARS) currentGear++;
+        e.preventDefault();
+        return;
+    }
+    if (e.code === 'KeyA') {
+        if (currentGear > 1) {
+            currentGear--;
+            speed = Math.min(speed, GEAR_MAX_SPEEDS[currentGear - 1]);
+        }
+        e.preventDefault();
+        return;
+    }
     if (e.code in keys) {
         keys[e.code] = true;
         e.preventDefault();
@@ -261,6 +345,88 @@ function drawProceduralSprite(spriteObj, destX, destY, destW, clipY) {
 function drawHUD() {
     ctx.fillStyle = 'rgba(0, 0, 0, 0.6)'; ctx.fillRect(15, 15, 200, 90);
 
+    // RPM aus Geschwindigkeit und Gang
+    const gearMaxSpeed = GEAR_MAX_SPEEDS[currentGear - 1];
+    const rpm = gearMaxSpeed > 0
+        ? Math.min(RPM_REDLINE, RPM_IDLE + (speed / gearMaxSpeed) * (RPM_REDLINE - RPM_IDLE))
+        : RPM_IDLE;
+
+    // Analoges Drehzahlmesser (links neben dem Tacho)
+    const rpmCenterX = width - 15 - 165 - 10 - 165 / 2;
+    const rpmCenterY = 52;
+    const rpmRadius = 42;
+    const rpmBoxW = 165;
+    const rpmBoxH = 78;
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+    ctx.fillRect(width - 15 - rpmBoxW * 2 - 10, 15, rpmBoxW, rpmBoxH);
+
+    ctx.strokeStyle = '#555';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(rpmCenterX, rpmCenterY, rpmRadius, Math.PI, 0, false);
+    ctx.stroke();
+
+    ctx.fillStyle = '#AAA';
+    ctx.font = '10px "Courier New"';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (let r = 0; r <= RPM_REDLINE; r += 1000) {
+        const t = r / RPM_REDLINE;
+        const angle = Math.PI - t * Math.PI;
+        const innerR = rpmRadius - 8;
+        const outerR = rpmRadius;
+        ctx.beginPath();
+        ctx.moveTo(rpmCenterX + Math.cos(angle) * innerR, rpmCenterY - Math.sin(angle) * innerR);
+        ctx.lineTo(rpmCenterX + Math.cos(angle) * outerR, rpmCenterY - Math.sin(angle) * outerR);
+        ctx.stroke();
+        const labelR = rpmRadius - 18;
+        if (r % 2000 === 0 || r === RPM_REDLINE) {
+            ctx.fillText(String(r / 1000) + 'k', rpmCenterX + Math.cos(angle) * labelR, rpmCenterY - Math.sin(angle) * labelR);
+        }
+    }
+
+    // Roter Bereich (Redline)
+    ctx.strokeStyle = 'rgba(255, 50, 50, 0.8)';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(rpmCenterX, rpmCenterY, rpmRadius, Math.PI * (1 - 6000 / RPM_REDLINE), 0, false);
+    ctx.stroke();
+
+    const rpmClamped = Math.min(rpm, RPM_REDLINE);
+    const rpmNeedleAngle = Math.PI - (rpmClamped / RPM_REDLINE) * Math.PI;
+    const rpmNeedleLen = rpmRadius - 10;
+    ctx.strokeStyle = rpm >= RPM_REDLINE * 0.9 ? '#F33' : '#FFF';
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(rpmCenterX, rpmCenterY);
+    ctx.lineTo(
+        rpmCenterX + Math.cos(rpmNeedleAngle) * rpmNeedleLen,
+        rpmCenterY - Math.sin(rpmNeedleAngle) * rpmNeedleLen
+    );
+    ctx.stroke();
+
+    ctx.fillStyle = '#333';
+    ctx.beginPath();
+    ctx.arc(rpmCenterX, rpmCenterY, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#666';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    ctx.fillStyle = '#888';
+    ctx.font = '10px "Courier New"';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText('RPM', rpmCenterX, rpmCenterY + rpmRadius - 5);
+
+    // Gang-Anzeige im RPM-Kreis
+    ctx.fillStyle = '#FFF';
+    ctx.font = 'bold 18px "Courier New"';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(currentGear), rpmCenterX, rpmCenterY - 8);
+
     // Analoges Tacho (rechts oben)
     const tachoCenterX = width - 92;
     const tachoCenterY = 52;
@@ -417,7 +583,7 @@ function render() {
     const onShoulder = Math.abs(playerX) > ROAD_EDGE && !isCrashed;
 
     ctx.save();
-    if (onShoulder && speed > 0) {
+    if (onShoulder && speed > 0 && jumpHeight === 0) {
         const jitterX = (Math.random() - 0.5) * 6;
         const jitterY = (Math.random() - 0.5) * 3;
         ctx.translate(jitterX, jitterY);
@@ -458,14 +624,17 @@ function update() {
         let currentSegIndex = Math.floor(position / segmentLength) % segments.length;
         let groundHeight = segments[currentSegIndex].y;
 
-                if (playerY < groundHeight - CRASH_RESET_GROUND_OFFSET) {
+        if (playerY < groundHeight - CRASH_RESET_GROUND_OFFSET) {
             isCrashed = false;
             playerY = groundHeight;
             playerVelY = 0;
             speed = 0;
             crashRot = 0;
             playerX = 0;
+            currentGear = 1;
         }
+
+        updateEngineSound(RPM_IDLE, 0);
 
         render();
         requestAnimationFrame(update);
@@ -485,25 +654,38 @@ function update() {
     let nextSeg = segments[(startSegIndex + 1) % segments.length];
     let trackElevation = baseSeg.y + (nextSeg.y - baseSeg.y) * (offset / segmentLength);
 
-    // --- Statische Hindernisse Kollision ---
-    let playerSegSprites = baseSeg.sprites;
-    if (playerY <= trackElevation + 500) {
-        for (let i = 0; i < playerSegSprites.length; i++) {
-            let sprite = playerSegSprites[i];
-            let spriteW = 0.5;
-            if (sprite.type === 'BUILDING') spriteW = 0.9;
-            if (sprite.type === 'STREETLIGHT') spriteW = 0.2;
+    // --- Statische Hindernisse Kollision (nur am Boden, nicht in der Luft) ---
+    const inAir = playerY > trackElevation + 80;
+    if (!inAir) {
+        const segmentsToCheck = [
+            { seg: baseSeg, segZ: startSegIndex * segmentLength },
+            { seg: nextSeg, segZ: (startSegIndex + 1) * segmentLength }
+        ];
+        for (let s = 0; s < segmentsToCheck.length; s++) {
+            const { seg, segZ } = segmentsToCheck[s];
+            const distZ = Math.abs(position - segZ);
+            if (distZ > COLLISION_STATIC_Z_RANGE) continue;
 
-            if (Math.abs(playerX - sprite.offset) < spriteW) {
-                if (speed > CRASH_SPEED_THRESHOLD) {
-                    isCrashed = true;
-                    playerVelY = speed * 4;
-                    crashSpinSpeed = 0.1 + (speed / maxSpeed) * 0.4;
-                } else {
-                    speed = 0;
+            let playerSegSprites = seg.sprites;
+            for (let i = 0; i < playerSegSprites.length; i++) {
+                let sprite = playerSegSprites[i];
+                let spriteW = 0.5;
+                if (sprite.type === 'TREE_PINE' || sprite.type === 'TREE_LEAFY') spriteW = 0.45;
+                if (sprite.type === 'BUILDING') spriteW = 0.9;
+                if (sprite.type === 'STREETLIGHT') spriteW = 0.2;
+
+                if (Math.abs(playerX - sprite.offset) < spriteW) {
+                    if (speed > CRASH_SPEED_THRESHOLD) {
+                        isCrashed = true;
+                        playerVelY = speed * 4;
+                        crashSpinSpeed = 0.1 + (speed / maxSpeed) * 0.4;
+                    } else {
+                        speed = 0;
+                    }
+                    break;
                 }
-                break;
             }
+            if (isCrashed) break;
         }
     }
 
@@ -534,14 +716,24 @@ function update() {
     }
 
     const onShoulder = Math.abs(playerX) > ROAD_EDGE;
-    const effectiveMaxSpeed = onShoulder ? SHOULDER_MAX_SPEED : maxSpeed;
-    const accelRate = onShoulder ? SHOULDER_ACCEL : 1.2;
+    const gearMaxSpeed = GEAR_MAX_SPEEDS[currentGear - 1];
+    const effectiveMaxSpeed = onShoulder
+        ? Math.min(SHOULDER_MAX_SPEED, gearMaxSpeed)
+        : gearMaxSpeed;
+    let accelRate = onShoulder ? SHOULDER_ACCEL : 1.2;
+
+    // In hohen Gängen bei niedriger Geschwindigkeit kaum beschleunigen (nicht „anfahren“)
+    const gearMinSpeed = GEAR_MIN_SPEEDS[currentGear - 1];
+    if (speed < gearMinSpeed && keys.ArrowUp) {
+        accelRate *= 0.06;
+    }
 
     if (keys.ArrowUp) speed = Math.min(speed + accelRate, effectiveMaxSpeed);
     else if (keys.ArrowDown) speed = Math.max(speed - 6, 0);
     else speed = Math.max(speed - COAST_DECEL, 0);
 
     if (onShoulder && speed > SHOULDER_MAX_SPEED) speed = Math.max(SHOULDER_MAX_SPEED, speed - 5);
+    speed = Math.min(speed, effectiveMaxSpeed);
 
     position += speed;
 
@@ -570,6 +762,12 @@ function update() {
     if (keys.ArrowRight) playerX += STEERING_FACTOR * steeringMul;
 
     playerX = Math.max(-2.5, Math.min(2.5, playerX));
+
+    const gearMaxSpeedForRpm = GEAR_MAX_SPEEDS[currentGear - 1];
+    const rpm = gearMaxSpeedForRpm > 0
+        ? Math.min(RPM_REDLINE, RPM_IDLE + (speed / gearMaxSpeedForRpm) * (RPM_REDLINE - RPM_IDLE))
+        : RPM_IDLE;
+    updateEngineSound(rpm, keys.ArrowUp ? 1 : 0);
 
     render();
     requestAnimationFrame(update);
