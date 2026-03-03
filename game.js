@@ -22,6 +22,8 @@ let skyOffset = 0;
 let isCrashed = false;
 let crashRot = 0;
 let crashSpinSpeed = 0;
+/** Zeitstempel des letzten Crash-Resets (für Invulnerabilität) */
+let crashResetAt = 0;
 
 const maxSpeed = 250;
 const segmentLength = 200;
@@ -31,6 +33,8 @@ const roadWidth = 3000;
 
 // Kollision & Crash-Konstanten
 const CRASH_RESET_GROUND_OFFSET = 100;
+/** Nach Crash-Reset: so viele ms lang keine erneute Crash-Auslösung (verhindert Crash-Loop mit NPCs) */
+const CRASH_INVULN_MS = 1800;
 const CRASH_SPEED_THRESHOLD = 50;
 const COLLISION_Z_RANGE = 250;
 const COLLISION_Z_OFFSET = 300;
@@ -607,6 +611,8 @@ function render() {
 function checkStaticObstacleCollision(trackState) {
     const inAir = playerY > trackState.trackElevation + 80;
     if (inAir) return;
+    if (Date.now() - crashResetAt < CRASH_INVULN_MS) return;
+
     const segmentsToCheck = [
         { seg: trackState.baseSeg, segZ: trackState.startSegIndex * segmentLength },
         { seg: trackState.nextSeg, segZ: (trackState.startSegIndex + 1) * segmentLength }
@@ -644,6 +650,8 @@ function updateNPCsAndCheckCollision(trackState) {
         const distToPlayerZ = Math.abs(car.z - (position % maxZ + COLLISION_Z_OFFSET));
         if (distToPlayerZ >= COLLISION_Z_RANGE || playerY > trackState.trackElevation + 1500) continue;
         if (Math.abs(playerX - car.offset) >= COLLISION_PLAYER_CAR_X) continue;
+        if (Date.now() - crashResetAt < CRASH_INVULN_MS) continue;
+
         if (car.dir === -1) {
             isCrashed = true;
             playCrashSound();
@@ -665,11 +673,12 @@ function update() {
         playerY += playerVelY;
         position += speed;
 
-        let currentSegIndex = Math.floor(position / segmentLength) % segments.length;
-        let groundHeight = segments[currentSegIndex].y;
+        const trackStateCrash = getTrackState(position);
+        const groundHeight = trackStateCrash.trackElevation;
 
         if (playerY < groundHeight - CRASH_RESET_GROUND_OFFSET) {
             isCrashed = false;
+            crashResetAt = Date.now();
             playerY = groundHeight;
             playerVelY = 0;
             speed = 0;
