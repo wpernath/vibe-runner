@@ -3,6 +3,13 @@ const ctx = canvas.getContext('2d');
 const width = canvas.width;
 const height = canvas.height;
 
+/*
+ * Struktur: 1) Konstanten & State  2) Audio  3) Input  4) Farben
+ *          5) Strecke (buildRoad, project, drawQuad, drawParallaxLayers)
+ *          6) Sprites (drawProceduralSprite + Typen)  7) HUD (drawHUD + Gauges)
+ *          8) Render  9) Update (Kollision, Physik, Game Loop)  10) Start
+ */
+
 // --- Spielvariablen ---
 let position = 0;
 let playerX = 0;
@@ -60,6 +67,25 @@ let currentGear = 1;
 
 let segments = [];
 let cars = [];
+
+// --- Hilfsfunktionen für Strecke & Antrieb ---
+function getTrackState(pos) {
+    const startSegIndex = Math.floor(pos / segmentLength) % segments.length;
+    const offset = pos % segmentLength;
+    const baseSeg = segments[startSegIndex];
+    const nextSeg = segments[(startSegIndex + 1) % segments.length];
+    const trackElevation = baseSeg.y + (nextSeg.y - baseSeg.y) * (offset / segmentLength);
+    return { startSegIndex, offset, baseSeg, nextSeg, trackElevation };
+}
+
+function computeRpm(speedKmh, gear) {
+    const gearMax = GEAR_MAX_SPEEDS[gear - 1];
+    if (gearMax <= 0) return RPM_IDLE;
+    return Math.min(
+        RPM_REDLINE,
+        RPM_IDLE + (speedKmh / gearMax) * (RPM_REDLINE - RPM_IDLE)
+    );
+}
 
 // --- HUD & UI Variablen ---
 let currentLap = 1;
@@ -414,188 +440,63 @@ function drawProceduralSprite(spriteObj, destX, destY, destW, clipY) {
     ctx.restore();
 }
 
+function drawRPMGauge(rpm) {
+    const cx = width - 15 - 165 - 10 - 165 / 2, cy = 52, r = 42, boxW = 165, left = width - 15 - boxW * 2 - 10;
+    ctx.fillStyle = 'rgba(20, 20, 25, 0.92)'; ctx.fillRect(left, 15, boxW, 78);
+    ctx.strokeStyle = 'rgba(80, 80, 90, 0.9)'; ctx.lineWidth = 1.5; ctx.strokeRect(left, 15, boxW, 78);
+    ctx.strokeStyle = '#777'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(cx, cy, r, Math.PI, 0, false); ctx.stroke();
+    ctx.strokeStyle = '#BBB'; ctx.lineWidth = 1.5; ctx.fillStyle = '#E8E8E8'; ctx.font = 'bold 12px "Courier New", monospace';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    for (let i = 0; i <= RPM_REDLINE; i += 1000) {
+        const angle = Math.PI - (i / RPM_REDLINE) * Math.PI;
+        ctx.beginPath(); ctx.moveTo(cx + Math.cos(angle) * (r - 10), cy - Math.sin(angle) * (r - 10));
+        ctx.lineTo(cx + Math.cos(angle) * r, cy - Math.sin(angle) * r); ctx.stroke();
+        if (i % 2000 === 0 || i === RPM_REDLINE) ctx.fillText(String(i / 1000) + 'k', cx + Math.cos(angle) * (r - 20), cy - Math.sin(angle) * (r - 20));
+    }
+    ctx.strokeStyle = 'rgba(255, 60, 60, 0.95)'; ctx.lineWidth = 5;
+    ctx.beginPath(); ctx.arc(cx, cy, r, Math.PI * (1 - 6000 / RPM_REDLINE), 0, false); ctx.stroke();
+    const needleAngle = Math.PI - (Math.min(rpm, RPM_REDLINE) / RPM_REDLINE) * Math.PI, len = r - 10;
+    ctx.strokeStyle = '#1a1a1a'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(needleAngle) * len, cy - Math.sin(needleAngle) * len); ctx.stroke();
+    ctx.strokeStyle = rpm >= RPM_REDLINE * 0.9 ? '#FF4444' : '#FFF'; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(needleAngle) * len, cy - Math.sin(needleAngle) * len); ctx.stroke();
+    ctx.fillStyle = '#333'; ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#555'; ctx.lineWidth = 1; ctx.stroke();
+    ctx.fillStyle = '#FFF'; ctx.font = 'bold 14px "Courier New", monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.fillText(Math.round(rpm) + ' rpm', cx, cy + r - 2);
+    ctx.font = 'bold 20px "Courier New"'; ctx.textBaseline = 'middle'; ctx.fillText(String(currentGear), cx, cy - 10);
+}
+
+function drawSpeedGauge(speedKmh) {
+    const cx = width - 92, cy = 52, r = 42, boxW = 165, left = width - 15 - boxW;
+    ctx.fillStyle = 'rgba(20, 20, 25, 0.92)'; ctx.fillRect(left, 15, boxW, 78);
+    ctx.strokeStyle = 'rgba(80, 80, 90, 0.9)'; ctx.lineWidth = 1.5; ctx.strokeRect(left, 15, boxW, 78);
+    ctx.strokeStyle = '#777'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(cx, cy, r, Math.PI, 0, false); ctx.stroke();
+    ctx.strokeStyle = '#BBB'; ctx.lineWidth = 1.5; ctx.fillStyle = '#E8E8E8'; ctx.font = 'bold 12px "Courier New", monospace';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    for (let v = 0; v <= maxSpeed; v += 50) {
+        const angle = Math.PI - (v / maxSpeed) * Math.PI;
+        ctx.beginPath(); ctx.moveTo(cx + Math.cos(angle) * (r - 10), cy - Math.sin(angle) * (r - 10));
+        ctx.lineTo(cx + Math.cos(angle) * r, cy - Math.sin(angle) * r); ctx.stroke();
+        if (v % 100 === 0 || v === maxSpeed) ctx.fillText(String(v), cx + Math.cos(angle) * (r - 20), cy - Math.sin(angle) * (r - 20));
+    }
+    const speedClamped = Math.min(speedKmh, maxSpeed), needleAngle = Math.PI - (speedClamped / maxSpeed) * Math.PI, len = r - 10;
+    ctx.strokeStyle = '#1a1a1a'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(needleAngle) * len, cy - Math.sin(needleAngle) * len); ctx.stroke();
+    ctx.strokeStyle = speedKmh > 280 ? '#FF4444' : '#FFF'; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(needleAngle) * len, cy - Math.sin(needleAngle) * len); ctx.stroke();
+    ctx.fillStyle = '#333'; ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#555'; ctx.lineWidth = 1; ctx.stroke();
+    ctx.fillStyle = '#FFF'; ctx.font = 'bold 14px "Courier New", monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.fillText(Math.round(speedKmh) + ' km/h', cx, cy + r - 2);
+}
+
 function drawHUD() {
     ctx.fillStyle = 'rgba(0, 0, 0, 0.6)'; ctx.fillRect(15, 15, 200, 90);
+    drawRPMGauge(computeRpm(speed, currentGear));
+    drawSpeedGauge(speed);
 
-    // RPM aus Geschwindigkeit und Gang
-    const gearMaxSpeed = GEAR_MAX_SPEEDS[currentGear - 1];
-    const rpm = gearMaxSpeed > 0
-        ? Math.min(RPM_REDLINE, RPM_IDLE + (speed / gearMaxSpeed) * (RPM_REDLINE - RPM_IDLE))
-        : RPM_IDLE;
-
-    // Analoges Drehzahlmesser (links neben dem Tacho)
-    const rpmCenterX = width - 15 - 165 - 10 - 165 / 2;
-    const rpmCenterY = 52;
-    const rpmRadius = 42;
-    const rpmBoxW = 165;
-    const rpmBoxH = 78;
-    ctx.fillStyle = 'rgba(20, 20, 25, 0.92)';
-    ctx.fillRect(width - 15 - rpmBoxW * 2 - 10, 15, rpmBoxW, rpmBoxH);
-    ctx.strokeStyle = 'rgba(80, 80, 90, 0.9)';
-    ctx.lineWidth = 1.5;
-    ctx.strokeRect(width - 15 - rpmBoxW * 2 - 10, 15, rpmBoxW, rpmBoxH);
-
-    ctx.strokeStyle = '#777';
-    ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    ctx.arc(rpmCenterX, rpmCenterY, rpmRadius, Math.PI, 0, false);
-    ctx.stroke();
-
-    ctx.strokeStyle = '#BBB';
-    ctx.lineWidth = 1.5;
-    ctx.fillStyle = '#E8E8E8';
-    ctx.font = 'bold 12px "Courier New", monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    for (let r = 0; r <= RPM_REDLINE; r += 1000) {
-        const t = r / RPM_REDLINE;
-        const angle = Math.PI - t * Math.PI;
-        const innerR = rpmRadius - 10;
-        const outerR = rpmRadius;
-        ctx.beginPath();
-        ctx.moveTo(rpmCenterX + Math.cos(angle) * innerR, rpmCenterY - Math.sin(angle) * innerR);
-        ctx.lineTo(rpmCenterX + Math.cos(angle) * outerR, rpmCenterY - Math.sin(angle) * outerR);
-        ctx.stroke();
-        const labelR = rpmRadius - 20;
-        if (r % 2000 === 0 || r === RPM_REDLINE) {
-            ctx.fillText(String(r / 1000) + 'k', rpmCenterX + Math.cos(angle) * labelR, rpmCenterY - Math.sin(angle) * labelR);
-        }
-    }
-
-    // Roter Bereich (Redline)
-    ctx.strokeStyle = 'rgba(255, 60, 60, 0.95)';
-    ctx.lineWidth = 5;
-    ctx.beginPath();
-    ctx.arc(rpmCenterX, rpmCenterY, rpmRadius, Math.PI * (1 - 6000 / RPM_REDLINE), 0, false);
-    ctx.stroke();
-
-    const rpmClamped = Math.min(rpm, RPM_REDLINE);
-    const rpmNeedleAngle = Math.PI - (rpmClamped / RPM_REDLINE) * Math.PI;
-    const rpmNeedleLen = rpmRadius - 10;
-    ctx.strokeStyle = '#1a1a1a';
-    ctx.lineWidth = 4;
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.moveTo(rpmCenterX, rpmCenterY);
-    ctx.lineTo(
-        rpmCenterX + Math.cos(rpmNeedleAngle) * rpmNeedleLen,
-        rpmCenterY - Math.sin(rpmNeedleAngle) * rpmNeedleLen
-    );
-    ctx.stroke();
-    ctx.strokeStyle = rpm >= RPM_REDLINE * 0.9 ? '#FF4444' : '#FFF';
-    ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    ctx.moveTo(rpmCenterX, rpmCenterY);
-    ctx.lineTo(
-        rpmCenterX + Math.cos(rpmNeedleAngle) * rpmNeedleLen,
-        rpmCenterY - Math.sin(rpmNeedleAngle) * rpmNeedleLen
-    );
-    ctx.stroke();
-
-    ctx.fillStyle = '#333';
-    ctx.beginPath();
-    ctx.arc(rpmCenterX, rpmCenterY, 5, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = '#555';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-
-    // Digitale RPM-Anzeige
-    ctx.fillStyle = '#FFF';
-    ctx.font = 'bold 14px "Courier New", monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
-    ctx.fillText(Math.round(rpm) + ' rpm', rpmCenterX, rpmCenterY + rpmRadius - 2);
-
-    // Gang-Anzeige im RPM-Kreis
-    ctx.fillStyle = '#FFF';
-    ctx.font = 'bold 20px "Courier New", monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(String(currentGear), rpmCenterX, rpmCenterY - 10);
-
-    // Analoges Tacho (rechts oben)
-    const tachoCenterX = width - 92;
-    const tachoCenterY = 52;
-    const tachoRadius = 42;
-    const tachoBoxW = 165;
-    const tachoBoxH = 78;
-    ctx.fillStyle = 'rgba(20, 20, 25, 0.92)';
-    ctx.fillRect(width - 15 - tachoBoxW, 15, tachoBoxW, tachoBoxH);
-    ctx.strokeStyle = 'rgba(80, 80, 90, 0.9)';
-    ctx.lineWidth = 1.5;
-    ctx.strokeRect(width - 15 - tachoBoxW, 15, tachoBoxW, tachoBoxH);
-
-    ctx.strokeStyle = '#777';
-    ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    ctx.arc(tachoCenterX, tachoCenterY, tachoRadius, Math.PI, 0, false);
-    ctx.stroke();
-
-    ctx.strokeStyle = '#BBB';
-    ctx.lineWidth = 1.5;
-    ctx.fillStyle = '#E8E8E8';
-    ctx.font = 'bold 12px "Courier New", monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    for (let v = 0; v <= maxSpeed; v += 50) {
-        const t = v / maxSpeed;
-        const angle = Math.PI - t * Math.PI;
-        const innerR = tachoRadius - 10;
-        const outerR = tachoRadius;
-        const x1 = tachoCenterX + Math.cos(angle) * innerR;
-        const y1 = tachoCenterY - Math.sin(angle) * innerR;
-        const x2 = tachoCenterX + Math.cos(angle) * outerR;
-        const y2 = tachoCenterY - Math.sin(angle) * outerR;
-        ctx.beginPath();
-        ctx.moveTo(x1, y1);
-        ctx.lineTo(x2, y2);
-        ctx.stroke();
-        const labelR = tachoRadius - 20;
-        if (v % 100 === 0 || v === maxSpeed) {
-            ctx.fillText(String(v), tachoCenterX + Math.cos(angle) * labelR, tachoCenterY - Math.sin(angle) * labelR);
-        }
-    }
-
-    const speedClamped = Math.min(speed, maxSpeed);
-    const needleAngle = Math.PI - (speedClamped / maxSpeed) * Math.PI;
-    const needleLen = tachoRadius - 10;
-    ctx.strokeStyle = '#1a1a1a';
-    ctx.lineWidth = 4;
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.moveTo(tachoCenterX, tachoCenterY);
-    ctx.lineTo(
-        tachoCenterX + Math.cos(needleAngle) * needleLen,
-        tachoCenterY - Math.sin(needleAngle) * needleLen
-    );
-    ctx.stroke();
-    ctx.strokeStyle = speed > 280 ? '#FF4444' : '#FFF';
-    ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    ctx.moveTo(tachoCenterX, tachoCenterY);
-    ctx.lineTo(
-        tachoCenterX + Math.cos(needleAngle) * needleLen,
-        tachoCenterY - Math.sin(needleAngle) * needleLen
-    );
-    ctx.stroke();
-
-    ctx.fillStyle = '#333';
-    ctx.beginPath();
-    ctx.arc(tachoCenterX, tachoCenterY, 5, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = '#555';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-
-    // Digitale Tacho-Anzeige
-    ctx.fillStyle = '#FFF';
-    ctx.font = 'bold 14px "Courier New", monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
-    ctx.fillText(Math.round(speed) + ' km/h', tachoCenterX, tachoCenterY + tachoRadius - 2);
-
-    // Linkes HUD (Lap, Zeit)
+    // Lap, Zeit
     ctx.fillStyle = '#FFF'; ctx.font = 'bold 20px "Courier New"'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
     ctx.fillText(`LAP:  ${currentLap}`, 25, 40); ctx.fillText(`TIME: ${currentLapTime.toFixed(2)}s`, 25, 65);
     if (lastLapTime > 0) { ctx.fillStyle = '#AAA'; ctx.fillText(`LAST: ${lastLapTime.toFixed(2)}s`, 25, 90); }
@@ -613,10 +514,7 @@ function drawHUD() {
 function render() {
     ctx.clearRect(0, 0, width, height);
 
-    let startPos = position / segmentLength;
-    let startSegIndex = Math.floor(startPos);
-    let offset = position % segmentLength;
-
+    const { startSegIndex, offset, baseSeg, nextSeg, trackElevation } = getTrackState(position);
     let camX = playerX * roadWidth;
     let camY = cameraHeight + playerY;
     let camZ = position;
@@ -671,10 +569,6 @@ function render() {
     const carW = 130; const carH = 55;
     let carX = width / 2 - carW / 2;
 
-    let baseSeg = segments[startSegIndex % segments.length];
-    let nextSeg = segments[(startSegIndex + 1) % segments.length];
-    let trackElevation = baseSeg.y + (nextSeg.y - baseSeg.y) * (offset / segmentLength);
-
     let jumpHeight = Math.max(0, playerY - trackElevation);
 
     const onShoulder = Math.abs(playerX) > ROAD_EDGE && !isCrashed;
@@ -710,6 +604,59 @@ function render() {
     drawHUD();
 }
 
+function checkStaticObstacleCollision(trackState) {
+    const inAir = playerY > trackState.trackElevation + 80;
+    if (inAir) return;
+    const segmentsToCheck = [
+        { seg: trackState.baseSeg, segZ: trackState.startSegIndex * segmentLength },
+        { seg: trackState.nextSeg, segZ: (trackState.startSegIndex + 1) * segmentLength }
+    ];
+    for (let s = 0; s < segmentsToCheck.length; s++) {
+        const { seg, segZ } = segmentsToCheck[s];
+        if (Math.abs(position - segZ) > COLLISION_STATIC_Z_RANGE) continue;
+        for (let i = 0; i < seg.sprites.length; i++) {
+            const sprite = seg.sprites[i];
+            let spriteW = 0.5;
+            if (sprite.type === 'TREE_PINE' || sprite.type === 'TREE_LEAFY') spriteW = 0.45;
+            if (sprite.type === 'BUILDING') spriteW = 0.9;
+            if (sprite.type === 'STREETLIGHT') spriteW = 0.2;
+            if (Math.abs(playerX - sprite.offset) >= spriteW) continue;
+            if (speed > CRASH_SPEED_THRESHOLD) {
+                isCrashed = true;
+                playCrashSound();
+                playerVelY = speed * 4;
+                crashSpinSpeed = 0.1 + (speed / maxSpeed) * 0.4;
+            } else speed = 0;
+            return;
+        }
+    }
+}
+
+function updateNPCsAndCheckCollision(trackState) {
+    const maxZ = 2000 * segmentLength;
+    for (let i = 0; i < segments.length; i++) segments[i].cars = [];
+    for (let i = 0; i < cars.length; i++) {
+        const car = cars[i];
+        car.z += car.dir * car.speed;
+        if (car.z < 0) car.z += maxZ;
+        if (car.z >= maxZ) car.z -= maxZ;
+        segments[Math.floor(car.z / segmentLength) % segments.length].cars.push(car);
+        const distToPlayerZ = Math.abs(car.z - (position % maxZ + COLLISION_Z_OFFSET));
+        if (distToPlayerZ >= COLLISION_Z_RANGE || playerY > trackState.trackElevation + 1500) continue;
+        if (Math.abs(playerX - car.offset) >= COLLISION_PLAYER_CAR_X) continue;
+        if (car.dir === -1) {
+            isCrashed = true;
+            playCrashSound();
+            playerVelY = 300 + (speed * 4);
+            crashSpinSpeed = 0.05 + (speed / maxSpeed) * 0.4;
+            car.speed = 0;
+        } else {
+            speed = Math.min(speed, car.speed - 10);
+            playerX += (playerX >= car.offset ? 0.15 : -0.15);
+        }
+    }
+}
+
 // --- Game Loop ---
 function update() {
     if (isCrashed) {
@@ -742,78 +689,11 @@ function update() {
     if (position > currentLap * trackLength) { lastLapTime = currentLapTime; currentLap++; lapStartTime = Date.now(); }
     currentLapTime = (Date.now() - lapStartTime) / 1000;
 
-    const maxZ = 2000 * segmentLength;
-    for (let i = 0; i < segments.length; i++) segments[i].cars = [];
+    let trackState = getTrackState(position);
+    checkStaticObstacleCollision(trackState);
+    if (!isCrashed) updateNPCsAndCheckCollision(trackState);
 
-    let startSegIndex = Math.floor(position / segmentLength) % segments.length;
-    let offset = position % segmentLength;
-    let baseSeg = segments[startSegIndex];
-    let nextSeg = segments[(startSegIndex + 1) % segments.length];
-    let trackElevation = baseSeg.y + (nextSeg.y - baseSeg.y) * (offset / segmentLength);
-
-    // --- Statische Hindernisse Kollision (nur am Boden, nicht in der Luft) ---
-    const inAir = playerY > trackElevation + 80;
-    if (!inAir) {
-        const segmentsToCheck = [
-            { seg: baseSeg, segZ: startSegIndex * segmentLength },
-            { seg: nextSeg, segZ: (startSegIndex + 1) * segmentLength }
-        ];
-        for (let s = 0; s < segmentsToCheck.length; s++) {
-            const { seg, segZ } = segmentsToCheck[s];
-            const distZ = Math.abs(position - segZ);
-            if (distZ > COLLISION_STATIC_Z_RANGE) continue;
-
-            let playerSegSprites = seg.sprites;
-            for (let i = 0; i < playerSegSprites.length; i++) {
-                let sprite = playerSegSprites[i];
-                let spriteW = 0.5;
-                if (sprite.type === 'TREE_PINE' || sprite.type === 'TREE_LEAFY') spriteW = 0.45;
-                if (sprite.type === 'BUILDING') spriteW = 0.9;
-                if (sprite.type === 'STREETLIGHT') spriteW = 0.2;
-
-                if (Math.abs(playerX - sprite.offset) < spriteW) {
-                    if (speed > CRASH_SPEED_THRESHOLD) {
-                        isCrashed = true;
-                        playCrashSound();
-                        playerVelY = speed * 4;
-                        crashSpinSpeed = 0.1 + (speed / maxSpeed) * 0.4;
-                    } else {
-                        speed = 0;
-                    }
-                    break;
-                }
-            }
-            if (isCrashed) break;
-        }
-    }
-
-
-    for (let i = 0; i < cars.length; i++) {
-        let car = cars[i];
-        car.z += car.dir * car.speed;
-        if (car.z < 0) car.z += maxZ; if (car.z >= maxZ) car.z -= maxZ;
-        let segIndex = Math.floor(car.z / segmentLength) % segments.length;
-        segments[segIndex].cars.push(car);
-
-        let distToPlayerZ = Math.abs(car.z - (position % maxZ + COLLISION_Z_OFFSET));
-
-        if (distToPlayerZ < COLLISION_Z_RANGE && playerY <= trackElevation + 1500) {
-            if (Math.abs(playerX - car.offset) < COLLISION_PLAYER_CAR_X) {
-                if (car.dir === -1) {
-                    isCrashed = true;
-                    playCrashSound();
-                    playerVelY = 300 + (speed * 4);
-                    crashSpinSpeed = 0.05 + (speed / maxSpeed) * 0.4;
-
-                    car.speed = 0;
-                } else {
-                    speed = Math.min(speed, car.speed - 10);
-                    playerX += (playerX >= car.offset ? 0.15 : -0.15);
-                }
-            }
-        }
-    }
-
+    let { startSegIndex, offset, baseSeg, nextSeg, trackElevation } = trackState;
     const onShoulder = Math.abs(playerX) > ROAD_EDGE;
     const gearMaxSpeed = GEAR_MAX_SPEEDS[currentGear - 1];
     const effectiveMaxSpeed = onShoulder
@@ -836,11 +716,7 @@ function update() {
 
     position += speed;
 
-    startSegIndex = Math.floor(position / segmentLength) % segments.length;
-    offset = position % segmentLength;
-    baseSeg = segments[startSegIndex];
-    nextSeg = segments[(startSegIndex + 1) % segments.length];
-    trackElevation = baseSeg.y + (nextSeg.y - baseSeg.y) * (offset / segmentLength);
+    ({ startSegIndex, offset, baseSeg, nextSeg, trackElevation } = getTrackState(position));
 
     playerVelY -= 120;
     playerY += playerVelY;
@@ -862,10 +738,7 @@ function update() {
 
     playerX = Math.max(-2.5, Math.min(2.5, playerX));
 
-    const gearMaxSpeedForRpm = GEAR_MAX_SPEEDS[currentGear - 1];
-    const rpm = gearMaxSpeedForRpm > 0
-        ? Math.min(RPM_REDLINE, RPM_IDLE + (speed / gearMaxSpeedForRpm) * (RPM_REDLINE - RPM_IDLE))
-        : RPM_IDLE;
+    const rpm = computeRpm(speed, currentGear);
     updateEngineSound(rpm, keys.ArrowUp ? 1 : 0);
 
     render();
