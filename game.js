@@ -71,10 +71,81 @@ let keys = { ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: fal
 
 // --- Motorsound (Web Audio API, prozedural) ---
 let engineSoundReady = false;
+let audioContext = null;
 let engineGainNode = null;
 let engineOsc1 = null;
 let engineOsc2 = null;
 let engineFilter = null;
+
+function playCrashSound() {
+    try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        const ctx = audioContext || (Ctx && new Ctx());
+        if (!ctx) return;
+        if (ctx.state === 'suspended') ctx.resume();
+
+        const t0 = ctx.currentTime;
+        const duration = 0.5;
+        const gainNode = ctx.createGain();
+        gainNode.gain.setValueAtTime(0, t0);
+        gainNode.gain.linearRampToValueAtTime(0.95, t0 + 0.008);
+        gainNode.gain.exponentialRampToValueAtTime(0.001, t0 + duration);
+        gainNode.connect(ctx.destination);
+
+        // Rausch-Impact (länger, voller)
+        const noiseDuration = 0.22;
+        const bufferSize = ctx.sampleRate * noiseDuration;
+        const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        const peakAt = bufferSize * 0.08;
+        for (let i = 0; i < bufferSize; i++) {
+            const env = i < peakAt
+                ? i / peakAt
+                : Math.exp(-(i - peakAt) / (bufferSize * 0.25));
+            data[i] = (Math.random() * 2 - 1) * env;
+        }
+        const noise = ctx.createBufferSource();
+        noise.buffer = buffer;
+        noise.connect(gainNode);
+        noise.start(t0);
+        noise.stop(t0 + noiseDuration);
+
+        // Tiefes „Boom“-Fundament
+        const thud = ctx.createOscillator();
+        thud.type = 'sine';
+        thud.frequency.setValueAtTime(90, t0);
+        thud.frequency.exponentialRampToValueAtTime(28, t0 + 0.12);
+        thud.connect(gainNode);
+        thud.start(t0);
+        thud.stop(t0 + 0.28);
+
+        // Zweiter tiefer Ton für mehr Druck
+        const thud2 = ctx.createOscillator();
+        thud2.type = 'sine';
+        thud2.frequency.setValueAtTime(55, t0);
+        thud2.frequency.exponentialRampToValueAtTime(22, t0 + 0.18);
+        const thud2Gain = ctx.createGain();
+        thud2Gain.gain.setValueAtTime(0.7, t0);
+        thud2Gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.25);
+        thud2.connect(thud2Gain);
+        thud2Gain.connect(gainNode);
+        thud2.start(t0);
+        thud2.stop(t0 + 0.25);
+
+        // Kurzer „Crunch“ im Mittelfrequenzbereich
+        const crunch = ctx.createOscillator();
+        crunch.type = 'sawtooth';
+        crunch.frequency.setValueAtTime(180, t0);
+        crunch.frequency.exponentialRampToValueAtTime(50, t0 + 0.06);
+        const crunchGain = ctx.createGain();
+        crunchGain.gain.setValueAtTime(0.4, t0);
+        crunchGain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.08);
+        crunch.connect(crunchGain);
+        crunchGain.connect(gainNode);
+        crunch.start(t0);
+        crunch.stop(t0 + 0.08);
+    } catch (_) {}
+}
 
 function startEngineSound() {
     if (engineSoundReady) return;
@@ -82,6 +153,7 @@ function startEngineSound() {
         const Ctx = window.AudioContext || window.webkitAudioContext;
         if (!Ctx) return;
         const ctx = new Ctx();
+        audioContext = ctx;
         if (ctx.state === 'suspended') ctx.resume();
 
         engineGainNode = ctx.createGain();
@@ -702,6 +774,7 @@ function update() {
                 if (Math.abs(playerX - sprite.offset) < spriteW) {
                     if (speed > CRASH_SPEED_THRESHOLD) {
                         isCrashed = true;
+                        playCrashSound();
                         playerVelY = speed * 4;
                         crashSpinSpeed = 0.1 + (speed / maxSpeed) * 0.4;
                     } else {
@@ -728,6 +801,7 @@ function update() {
             if (Math.abs(playerX - car.offset) < COLLISION_PLAYER_CAR_X) {
                 if (car.dir === -1) {
                     isCrashed = true;
+                    playCrashSound();
                     playerVelY = 300 + (speed * 4);
                     crashSpinSpeed = 0.05 + (speed / maxSpeed) * 0.4;
 
