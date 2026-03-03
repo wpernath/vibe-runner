@@ -323,12 +323,11 @@ function buildRoad() {
 
     cars = [];
     for (let i = 0; i < 100; i++) {
-        let isOpposite = Math.random() > 0.8;
         cars.push({
             z: Math.random() * (2000 * segmentLength),
-            offset: isOpposite ? (-0.85 + Math.random() * 0.6) : (0.25 + Math.random() * 0.6),
+            offset: 0.25 + Math.random() * 0.6,
             speed: 40 + Math.random() * 60,
-            dir: isOpposite ? -1 : 1,
+            dir: 1,
             color: `hsl(${Math.floor(Math.random() * 360)}, 80%, 50%)`
         });
     }
@@ -708,7 +707,7 @@ function update() {
     const effectiveMaxSpeed = onShoulder
         ? Math.min(SHOULDER_MAX_SPEED, gearMaxSpeed)
         : gearMaxSpeed;
-    let accelRate = onShoulder ? SHOULDER_ACCEL : 1.2;
+    let accelRate = onShoulder ? SHOULDER_ACCEL : 0.7;
 
     // In hohen Gängen bei niedriger Geschwindigkeit kaum beschleunigen (nicht „anfahren“)
     const gearMinSpeed = GEAR_MIN_SPEEDS[currentGear - 1];
