@@ -357,37 +357,42 @@ function drawHUD() {
     const rpmRadius = 42;
     const rpmBoxW = 165;
     const rpmBoxH = 78;
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+    ctx.fillStyle = 'rgba(20, 20, 25, 0.92)';
     ctx.fillRect(width - 15 - rpmBoxW * 2 - 10, 15, rpmBoxW, rpmBoxH);
+    ctx.strokeStyle = 'rgba(80, 80, 90, 0.9)';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(width - 15 - rpmBoxW * 2 - 10, 15, rpmBoxW, rpmBoxH);
 
-    ctx.strokeStyle = '#555';
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#777';
+    ctx.lineWidth = 2.5;
     ctx.beginPath();
     ctx.arc(rpmCenterX, rpmCenterY, rpmRadius, Math.PI, 0, false);
     ctx.stroke();
 
-    ctx.fillStyle = '#AAA';
-    ctx.font = '10px "Courier New"';
+    ctx.strokeStyle = '#BBB';
+    ctx.lineWidth = 1.5;
+    ctx.fillStyle = '#E8E8E8';
+    ctx.font = 'bold 12px "Courier New", monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     for (let r = 0; r <= RPM_REDLINE; r += 1000) {
         const t = r / RPM_REDLINE;
         const angle = Math.PI - t * Math.PI;
-        const innerR = rpmRadius - 8;
+        const innerR = rpmRadius - 10;
         const outerR = rpmRadius;
         ctx.beginPath();
         ctx.moveTo(rpmCenterX + Math.cos(angle) * innerR, rpmCenterY - Math.sin(angle) * innerR);
         ctx.lineTo(rpmCenterX + Math.cos(angle) * outerR, rpmCenterY - Math.sin(angle) * outerR);
         ctx.stroke();
-        const labelR = rpmRadius - 18;
+        const labelR = rpmRadius - 20;
         if (r % 2000 === 0 || r === RPM_REDLINE) {
             ctx.fillText(String(r / 1000) + 'k', rpmCenterX + Math.cos(angle) * labelR, rpmCenterY - Math.sin(angle) * labelR);
         }
     }
 
     // Roter Bereich (Redline)
-    ctx.strokeStyle = 'rgba(255, 50, 50, 0.8)';
-    ctx.lineWidth = 4;
+    ctx.strokeStyle = 'rgba(255, 60, 60, 0.95)';
+    ctx.lineWidth = 5;
     ctx.beginPath();
     ctx.arc(rpmCenterX, rpmCenterY, rpmRadius, Math.PI * (1 - 6000 / RPM_REDLINE), 0, false);
     ctx.stroke();
@@ -395,9 +400,18 @@ function drawHUD() {
     const rpmClamped = Math.min(rpm, RPM_REDLINE);
     const rpmNeedleAngle = Math.PI - (rpmClamped / RPM_REDLINE) * Math.PI;
     const rpmNeedleLen = rpmRadius - 10;
-    ctx.strokeStyle = rpm >= RPM_REDLINE * 0.9 ? '#F33' : '#FFF';
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#1a1a1a';
+    ctx.lineWidth = 4;
     ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(rpmCenterX, rpmCenterY);
+    ctx.lineTo(
+        rpmCenterX + Math.cos(rpmNeedleAngle) * rpmNeedleLen,
+        rpmCenterY - Math.sin(rpmNeedleAngle) * rpmNeedleLen
+    );
+    ctx.stroke();
+    ctx.strokeStyle = rpm >= RPM_REDLINE * 0.9 ? '#FF4444' : '#FFF';
+    ctx.lineWidth = 2.5;
     ctx.beginPath();
     ctx.moveTo(rpmCenterX, rpmCenterY);
     ctx.lineTo(
@@ -408,24 +422,25 @@ function drawHUD() {
 
     ctx.fillStyle = '#333';
     ctx.beginPath();
-    ctx.arc(rpmCenterX, rpmCenterY, 4, 0, Math.PI * 2);
+    ctx.arc(rpmCenterX, rpmCenterY, 5, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = '#666';
+    ctx.strokeStyle = '#555';
     ctx.lineWidth = 1;
     ctx.stroke();
 
-    ctx.fillStyle = '#888';
-    ctx.font = '10px "Courier New"';
+    // Digitale RPM-Anzeige
+    ctx.fillStyle = '#FFF';
+    ctx.font = 'bold 14px "Courier New", monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
-    ctx.fillText('RPM', rpmCenterX, rpmCenterY + rpmRadius - 5);
+    ctx.fillText(Math.round(rpm) + ' rpm', rpmCenterX, rpmCenterY + rpmRadius - 2);
 
     // Gang-Anzeige im RPM-Kreis
     ctx.fillStyle = '#FFF';
-    ctx.font = 'bold 18px "Courier New"';
+    ctx.font = 'bold 20px "Courier New", monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(String(currentGear), rpmCenterX, rpmCenterY - 8);
+    ctx.fillText(String(currentGear), rpmCenterX, rpmCenterY - 10);
 
     // Analoges Tacho (rechts oben)
     const tachoCenterX = width - 92;
@@ -433,25 +448,28 @@ function drawHUD() {
     const tachoRadius = 42;
     const tachoBoxW = 165;
     const tachoBoxH = 78;
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+    ctx.fillStyle = 'rgba(20, 20, 25, 0.92)';
     ctx.fillRect(width - 15 - tachoBoxW, 15, tachoBoxW, tachoBoxH);
+    ctx.strokeStyle = 'rgba(80, 80, 90, 0.9)';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(width - 15 - tachoBoxW, 15, tachoBoxW, tachoBoxH);
 
-    // Skala (Halbkreis von links nach rechts: 0 … maxSpeed)
-    ctx.strokeStyle = '#555';
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#777';
+    ctx.lineWidth = 2.5;
     ctx.beginPath();
     ctx.arc(tachoCenterX, tachoCenterY, tachoRadius, Math.PI, 0, false);
     ctx.stroke();
 
-    // Skalenstriche
-    ctx.fillStyle = '#AAA';
-    ctx.font = '11px "Courier New"';
+    ctx.strokeStyle = '#BBB';
+    ctx.lineWidth = 1.5;
+    ctx.fillStyle = '#E8E8E8';
+    ctx.font = 'bold 12px "Courier New", monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     for (let v = 0; v <= maxSpeed; v += 50) {
         const t = v / maxSpeed;
         const angle = Math.PI - t * Math.PI;
-        const innerR = tachoRadius - 8;
+        const innerR = tachoRadius - 10;
         const outerR = tachoRadius;
         const x1 = tachoCenterX + Math.cos(angle) * innerR;
         const y1 = tachoCenterY - Math.sin(angle) * innerR;
@@ -461,18 +479,17 @@ function drawHUD() {
         ctx.moveTo(x1, y1);
         ctx.lineTo(x2, y2);
         ctx.stroke();
-        const labelR = tachoRadius - 18;
+        const labelR = tachoRadius - 20;
         if (v % 100 === 0 || v === maxSpeed) {
             ctx.fillText(String(v), tachoCenterX + Math.cos(angle) * labelR, tachoCenterY - Math.sin(angle) * labelR);
         }
     }
 
-    // Zeiger
     const speedClamped = Math.min(speed, maxSpeed);
     const needleAngle = Math.PI - (speedClamped / maxSpeed) * Math.PI;
     const needleLen = tachoRadius - 10;
-    ctx.strokeStyle = speed > 280 ? '#F33' : '#FFF';
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#1a1a1a';
+    ctx.lineWidth = 4;
     ctx.lineCap = 'round';
     ctx.beginPath();
     ctx.moveTo(tachoCenterX, tachoCenterY);
@@ -481,22 +498,30 @@ function drawHUD() {
         tachoCenterY - Math.sin(needleAngle) * needleLen
     );
     ctx.stroke();
+    ctx.strokeStyle = speed > 280 ? '#FF4444' : '#FFF';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(tachoCenterX, tachoCenterY);
+    ctx.lineTo(
+        tachoCenterX + Math.cos(needleAngle) * needleLen,
+        tachoCenterY - Math.sin(needleAngle) * needleLen
+    );
+    ctx.stroke();
 
-    // Mittelpunkt (Nadelzapfen)
     ctx.fillStyle = '#333';
     ctx.beginPath();
-    ctx.arc(tachoCenterX, tachoCenterY, 4, 0, Math.PI * 2);
+    ctx.arc(tachoCenterX, tachoCenterY, 5, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = '#666';
+    ctx.strokeStyle = '#555';
     ctx.lineWidth = 1;
     ctx.stroke();
 
-    // Einheit unter dem Tacho
-    ctx.fillStyle = '#888';
-    ctx.font = '10px "Courier New"';
+    // Digitale Tacho-Anzeige
+    ctx.fillStyle = '#FFF';
+    ctx.font = 'bold 14px "Courier New", monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
-    ctx.fillText('km/h', tachoCenterX, tachoCenterY + tachoRadius - 5);
+    ctx.fillText(Math.round(speed) + ' km/h', tachoCenterX, tachoCenterY + tachoRadius - 2);
 
     // Linkes HUD (Lap, Zeit)
     ctx.fillStyle = '#FFF'; ctx.font = 'bold 20px "Courier New"'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
