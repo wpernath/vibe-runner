@@ -694,7 +694,12 @@ function update() {
     }
 
     let trackLength = segments.length * segmentLength;
-    if (position > currentLap * trackLength) { lastLapTime = currentLapTime; currentLap++; lapStartTime = Date.now(); }
+    if (position > currentLap * trackLength) {
+        lastLapTime = currentLapTime;
+        currentLap++;
+        lapStartTime = Date.now();
+        position = position % trackLength;
+    }
     currentLapTime = (Date.now() - lapStartTime) / 1000;
 
     let trackState = getTrackState(position);
