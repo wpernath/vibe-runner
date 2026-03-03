@@ -13,6 +13,9 @@ html, body {
     overflow: hidden;
     -webkit-tap-highlight-color: transparent;
     touch-action: manipulation;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
 }
 
 body {
@@ -57,6 +60,9 @@ canvas {
     bottom: 0;
     pointer-events: none;
     z-index: 10;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
 }
 
 .touch-controls .touch-btn {
@@ -71,7 +77,10 @@ canvas {
     min-width: 56px;
     min-height: 56px;
     -webkit-tap-highlight-color: transparent;
-    touch-action: manipulation;
+    touch-action: none;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
 }
 
 .touch-controls .touch-btn:active {

@@ -320,6 +320,7 @@ document.querySelectorAll('#touchControls [data-key]').forEach(btn => {
         if (value) startEngineSound();
     }
 
+    btn.addEventListener('touchstart', e => e.preventDefault(), { passive: false });
     btn.addEventListener('pointerdown', e => {
         e.preventDefault();
         setKey(true);
@@ -329,6 +330,11 @@ document.querySelectorAll('#touchControls [data-key]').forEach(btn => {
     btn.addEventListener('pointercancel', setKey.bind(null, false));
     btn.addEventListener('contextmenu', e => e.preventDefault());
 });
+
+// Prevent context menu (copy/paste) on long-press anywhere in touch controls (iOS etc.)
+document.addEventListener('contextmenu', e => {
+    if (e.target.closest('#touchControls')) e.preventDefault();
+}, true);
 
 const COLORS = {
     DARK: { road: '#5b5b5b', grass: '#10AA10', rumble: '#555' },
