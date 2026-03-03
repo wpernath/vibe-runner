@@ -59,10 +59,18 @@ Some browsers restrict file access when opening `file://` directly. If the game 
    - **Node (npx)**: `npx serve -p 8000`
 2. Open `http://localhost:8000/run.html` in your browser.
 
+### Option 3: Im Netzwerk für Handy/iPad
+
+Zum Testen auf dem Handy oder iPad im gleichen WLAN:
+
+1. Im Projektordner ausführen: `./serve.sh` (optional mit Port: `./serve.sh 3000`)
+2. Die ausgegebene URL (z. B. `http://192.168.1.42:8080/run.html`) auf dem Gerät im Browser öffnen.
+3. Server mit Ctrl+C beenden.
+
 ### Requirements
 
 - A browser with JavaScript enabled and support for Canvas 2D and the Web Audio API (all current desktop and mobile browsers).
-- Keyboard (no touch/mobile controls are implemented).
+- Keyboard oder Touch-Steuerung (auf Mobilgeräten).
 
 ---
 
@@ -73,6 +81,7 @@ runningout/
 ├── run.html    # Entry page; canvas + script tag
 ├── game.js     # Full game logic, rendering, audio
 ├── style.css   # Layout and canvas styling
+├── serve.sh    # Lokaler Server für Netzwerk-Zugriff (Handy/iPad)
 ├── README.md   # This file
 └── LICENSE     # License terms
 ```

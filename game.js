@@ -1,7 +1,38 @@
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
-const width = canvas.width;
-const height = canvas.height;
+let width = canvas.width;
+let height = canvas.height;
+
+const gameContainer = document.getElementById('gameContainer');
+
+const DESKTOP_CANVAS_WIDTH = 800;
+const DESKTOP_CANVAS_HEIGHT = 600;
+
+/**
+ * Resizes the canvas: on desktop keeps 800x600 so projection looks correct; on mobile/touch fills the container (fullscreen).
+ */
+function resizeCanvas() {
+    const isMobile = window.matchMedia('(max-width: 768px), (pointer: coarse)').matches;
+
+    if (isMobile && gameContainer) {
+        const w = gameContainer.clientWidth || window.innerWidth || DESKTOP_CANVAS_WIDTH;
+        const h = gameContainer.clientHeight || window.innerHeight || DESKTOP_CANVAS_HEIGHT;
+        canvas.width = Math.max(1, w);
+        canvas.height = Math.max(1, h);
+    } else {
+        canvas.width = DESKTOP_CANVAS_WIDTH;
+        canvas.height = DESKTOP_CANVAS_HEIGHT;
+    }
+    width = canvas.width;
+    height = canvas.height;
+}
+
+resizeCanvas();
+window.addEventListener('resize', resizeCanvas);
+if (gameContainer) {
+    const ro = new ResizeObserver(() => resizeCanvas());
+    ro.observe(gameContainer);
+}
 
 /*
  * Struktur: 1) Konstanten & State  2) Audio  3) Input  4) Farben
@@ -278,6 +309,26 @@ window.addEventListener('keydown', e => {
     }
 });
 window.addEventListener('keyup', e => keys[e.code] = false);
+
+// Touch/pointer controls for mobile
+document.querySelectorAll('#touchControls [data-key]').forEach(btn => {
+    const key = btn.dataset.key;
+    if (!(key in keys)) return;
+
+    function setKey(value) {
+        keys[key] = value;
+        if (value) startEngineSound();
+    }
+
+    btn.addEventListener('pointerdown', e => {
+        e.preventDefault();
+        setKey(true);
+    });
+    btn.addEventListener('pointerup', setKey.bind(null, false));
+    btn.addEventListener('pointerleave', setKey.bind(null, false));
+    btn.addEventListener('pointercancel', setKey.bind(null, false));
+    btn.addEventListener('contextmenu', e => e.preventDefault());
+});
 
 const COLORS = {
     DARK: { road: '#5b5b5b', grass: '#10AA10', rumble: '#555' },
