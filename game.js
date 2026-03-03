@@ -55,6 +55,11 @@ const CURVE_FORCE_SPEED_THRESHOLD = 60;
 // Mindest-Lenkwirkung (Anteil), damit bei niedriger Geschwindigkeit noch gelenkt werden kann
 const STEERING_MIN_FACTOR = 0.25;
 
+// Handbremse (linke Shift): weniger Grip = Sliden in Kurven
+const HANDBRAKE_STEERING_MUL = 0.26;
+const HANDBRAKE_CURVE_MUL = 1.7;
+const HANDBRAKE_DECEL = 0.35;
+
 // Schubabschaltung (kein Gas): Verzögerung pro Frame
 const COAST_DECEL = 0.4;
 
@@ -73,6 +78,12 @@ let segments = [];
 let cars = [];
 
 // --- Hilfsfunktionen für Strecke & Antrieb ---
+
+/**
+ * Liefert den Streckenzustand an einer gegebenen Position (Segment, Höhe, Kurve).
+ * @param {number} pos - Aktuelle Position auf der Strecke (Welt-Einheiten).
+ * @returns {{ startSegIndex: number, offset: number, baseSeg: object, nextSeg: object, trackElevation: number }} Segment-Index, Offset im Segment, aktuelle/naechstes Segment, interpolierte Straßenhöhe.
+ */
 function getTrackState(pos) {
     const startSegIndex = Math.floor(pos / segmentLength) % segments.length;
     const offset = pos % segmentLength;
@@ -82,6 +93,12 @@ function getTrackState(pos) {
     return { startSegIndex, offset, baseSeg, nextSeg, trackElevation };
 }
 
+/**
+ * Berechnet die Motordrehzahl (RPM) aus Geschwindigkeit und Gang.
+ * @param {number} speedKmh - Geschwindigkeit in km/h.
+ * @param {number} gear - Aktueller Gang (1..NUM_GEARS).
+ * @returns {number} Drehzahl (RPM_IDLE .. RPM_REDLINE).
+ */
 function computeRpm(speedKmh, gear) {
     const gearMax = GEAR_MAX_SPEEDS[gear - 1];
     if (gearMax <= 0) return RPM_IDLE;
@@ -97,7 +114,7 @@ let currentLapTime = 0;
 let lastLapTime = 0;
 let lapStartTime = Date.now();
 
-let keys = { ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false };
+let keys = { ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false, ShiftLeft: false };
 
 // --- Motorsound (Web Audio API, prozedural) ---
 let engineSoundReady = false;
@@ -107,6 +124,10 @@ let engineOsc1 = null;
 let engineOsc2 = null;
 let engineFilter = null;
 
+/**
+ * Spielt einen prozeduralen Crash-Sound ueber die Web Audio API ab
+ * (Rauschen, tiefes Boom, Crunch). Wird bei Kollision mit Hindernissen oder NPCs aufgerufen.
+ */
 function playCrashSound() {
     try {
         const Ctx = window.AudioContext || window.webkitAudioContext;
@@ -177,6 +198,10 @@ function playCrashSound() {
     } catch (_) {}
 }
 
+/**
+ * Initialisiert den Motorsound (AudioContext, Oszillatoren, Filter).
+ * Wird beim ersten Tastendruck aufgerufen (Browser-Autoplay). Idempotent.
+ */
 function startEngineSound() {
     if (engineSoundReady) return;
     try {
@@ -217,6 +242,11 @@ function startEngineSound() {
     } catch (_) { engineSoundReady = false; }
 }
 
+/**
+ * Aktualisiert Frequenz und Lautstaerke des Motorsounds anhand von Drehzahl und Gas.
+ * @param {number} rpm - Aktuelle Motordrehzahl.
+ * @param {number} throttle - Gaspedal 0..1 (z.B. 1 bei Pfeil hoch, 0 bei kein Gas).
+ */
 function updateEngineSound(rpm, throttle) {
     if (!engineSoundReady || !engineGainNode || !engineOsc1 || !engineOsc2) return;
     const baseFreq = 0.012 * rpm + 25;
@@ -259,6 +289,11 @@ const COLORS = {
 };
 
 // --- Strecke generieren ---
+
+/**
+ * Baut die komplette Strecke (2000 Segmente) und platziert NPC-Autos.
+ * Fuellt die globalen Arrays `segments` und `cars`. Segment-Daten: Kurve, Hoehe, Sprites (Baeume, Gebaeude, Laternen, Schilder), Farbe.
+ */
 function buildRoad() {
     segments = [];
     for (let n = 0; n < 2000; n++) {
@@ -333,6 +368,17 @@ function buildRoad() {
     }
 }
 
+/**
+ * Projiziert einen 3D-Punkt in 2D-Bildschirmkoordinaten (perspektivisch).
+ * Schreibt in das uebergebene Objekt p die Eigenschaften x, y, w (Halbe Breite der Strasse in Pixeln).
+ * @param {{ x: number, y: number, w: number }} p - Objekt, das mit x, y, w befuellt wird.
+ * @param {number} worldX - X in Weltkoordinaten (quer zur Fahrtrichtung).
+ * @param {number} worldY - Y (Hoehe).
+ * @param {number} worldZ - Z (Fahrtrichtung).
+ * @param {number} camX - Kamera X.
+ * @param {number} camY - Kamera Y.
+ * @param {number} camZ - Kamera Z.
+ */
 function project(p, worldX, worldY, worldZ, camX, camY, camZ) {
     let z = Math.max(1, worldZ - camZ);
     let scale = cameraDepth / z;
@@ -341,6 +387,16 @@ function project(p, worldX, worldY, worldZ, camX, camY, camZ) {
     p.w = Math.round(scale * roadWidth * width / 2);
 }
 
+/**
+ * Zeichnet ein Trapez (Quad) als Strasse/Rand-Band zwischen zwei projizierten Querschnitten.
+ * @param {string} color - Fuellfarbe (z.B. aus COLORS.road, COLORS.rumble).
+ * @param {number} x1 - Linke/rechte Bildschirm-X des vorderen Querschnitts.
+ * @param {number} y1 - Bildschirm-Y des vorderen Querschnitts.
+ * @param {number} w1 - Halbe Breite des vorderen Querschnitts (Pixel).
+ * @param {number} x2 - X des hinteren Querschnitts.
+ * @param {number} y2 - Y des hinteren Querschnitts.
+ * @param {number} w2 - Halbe Breite des hinteren Querschnitts.
+ */
 function drawQuad(color, x1, y1, w1, x2, y2, w2) {
     ctx.fillStyle = color; ctx.beginPath();
     ctx.moveTo(x1 - w1, y1); ctx.lineTo(x2 - w2, y2);
@@ -348,6 +404,10 @@ function drawQuad(color, x1, y1, w1, x2, y2, w2) {
     ctx.fill();
 }
 
+/**
+ * Zeichnet Himmel, Wolken und Berge als Parallax-Hintergrund.
+ * @param {number} horizonY - Bildschirm-Y der Horizontlinie.
+ */
 function drawParallaxLayers(horizonY) {
     let gradient = ctx.createLinearGradient(0, 0, 0, height);
     gradient.addColorStop(0, COLORS.SKY_TOP); gradient.addColorStop(1, COLORS.SKY_BOTTOM);
@@ -383,6 +443,15 @@ function drawParallaxLayers(horizonY) {
     ctx.lineTo(width, height); ctx.fill();
 }
 
+/**
+ * Zeichnet ein prozedurales Sprite (Baum, Gebaeude, Laterne, Schild, NPC-Auto) an der projizierten Position.
+ * Schneidet mit clipY, damit Objekte nicht ueber naehere Strasse gezeichnet werden.
+ * @param {{ type: string, data?: object }} spriteObj - Typ (z.B. 'TREE_PINE', 'BUILDING', 'NPC_CAR') und optionale Daten.
+ * @param {number} destX - Ziel-X auf dem Canvas (Mitte des Sprites).
+ * @param {number} destY - Ziel-Y (Fusslinie).
+ * @param {number} destW - Projizierte Breite (fuer Skalierung).
+ * @param {number} clipY - Maximale Y-Koordinate (Clip-Rechteck).
+ */
 function drawProceduralSprite(spriteObj, destX, destY, destW, clipY) {
     let s = destW * 0.001;
     ctx.save(); ctx.beginPath(); ctx.rect(0, 0, width, clipY); ctx.clip();
@@ -443,6 +512,11 @@ function drawProceduralSprite(spriteObj, destX, destY, destW, clipY) {
     ctx.restore();
 }
 
+/**
+ * Zeichnet den analogen Drehzahlmesser (RPM-Gauge) links neben dem Tacho.
+ * Zeigt aktuelle Drehzahl, Redline-Bereich und aktuellen Gang.
+ * @param {number} rpm - Anzuzeigende Motordrehzahl.
+ */
 function drawRPMGauge(rpm) {
     const cx = width - 15 - 165 - 10 - 165 / 2, cy = 52, r = 42, boxW = 165, left = width - 15 - boxW * 2 - 10;
     ctx.fillStyle = 'rgba(20, 20, 25, 0.92)'; ctx.fillRect(left, 15, boxW, 78);
@@ -467,9 +541,13 @@ function drawRPMGauge(rpm) {
     ctx.strokeStyle = '#555'; ctx.lineWidth = 1; ctx.stroke();
     ctx.fillStyle = '#FFF'; ctx.font = 'bold 14px "Courier New", monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
     ctx.fillText(Math.round(rpm) + ' rpm', cx, cy + r - 2);
-    ctx.font = 'bold 20px "Courier New"'; ctx.textBaseline = 'middle'; ctx.fillText(String(currentGear), cx, cy - 10);
+    ctx.font = 'bold 20px "Courier New"'; ctx.textBaseline = 'middle';     ctx.fillText(String(currentGear), cx, cy - 10);
 }
 
+/**
+ * Zeichnet den analogen Tacho (Geschwindigkeitsanzeige) rechts oben.
+ * @param {number} speedKmh - Anzuzeigende Geschwindigkeit in km/h.
+ */
 function drawSpeedGauge(speedKmh) {
     const cx = width - 92, cy = 52, r = 42, boxW = 165, left = width - 15 - boxW;
     ctx.fillStyle = 'rgba(20, 20, 25, 0.92)'; ctx.fillRect(left, 15, boxW, 78);
@@ -494,6 +572,9 @@ function drawSpeedGauge(speedKmh) {
     ctx.fillText(Math.round(speedKmh) + ' km/h', cx, cy + r - 2);
 }
 
+/**
+ * Zeichnet das komplette HUD: Lap/Zeit-Box, RPM-Gauge, Tacho, bei Crash den "CRASHED!"-Overlay.
+ */
 function drawHUD() {
     ctx.fillStyle = 'rgba(0, 0, 0, 0.6)'; ctx.fillRect(15, 15, 200, 90);
     drawRPMGauge(computeRpm(speed, currentGear));
@@ -514,6 +595,10 @@ function drawHUD() {
     }
 }
 
+/**
+ * Zeichnet einen kompletten Frame: Strasse (mit Kurven/Hoehe), Sprites, Spielerauto, HUD.
+ * Verwendet getTrackState(position) und projiziert die naechsten 300 Segmente.
+ */
 function render() {
     ctx.clearRect(0, 0, width, height);
 
@@ -607,6 +692,12 @@ function render() {
     drawHUD();
 }
 
+/**
+ * Prueft Kollision mit statischen Hindernissen (Baeume, Gebaeude, Laternen, Schilder).
+ * Nur am Boden (nicht in der Luft) und ausserhalb der Crash-Invulnerabilitaet.
+ * Setzt bei Treffer isCrashed/playCrashSound oder stoppt die Geschwindigkeit.
+ * @param {{ startSegIndex: number, baseSeg: object, nextSeg: object, trackElevation: number }} trackState - Aktueller Streckenzustand von getTrackState().
+ */
 function checkStaticObstacleCollision(trackState) {
     const inAir = playerY > trackState.trackElevation + 80;
     if (inAir) return;
@@ -637,6 +728,12 @@ function checkStaticObstacleCollision(trackState) {
     }
 }
 
+/**
+ * Bewegt alle NPC-Autos (z, Segment-Zuordnung) und prueft Kollision mit dem Spieler.
+ * Bei Kollision: Crash bei entgegenkommendem Auto, sonst Abbremsen und leichte Verschiebung.
+ * Beruecksichtigt Crash-Invulnerabilitaet nach Reset.
+ * @param {{ trackElevation: number }} trackState - Aktueller Streckenzustand (fuer Hoehenpruefung).
+ */
 function updateNPCsAndCheckCollision(trackState) {
     const maxZ = 2000 * segmentLength;
     for (let i = 0; i < segments.length; i++) segments[i].cars = [];
@@ -665,6 +762,11 @@ function updateNPCsAndCheckCollision(trackState) {
 }
 
 // --- Game Loop ---
+
+/**
+ * Haupt-Game-Loop (per requestAnimationFrame). Aktualisiert Crash-Zustand, Rundenzeit,
+ * Kollisionen, Beschleunigung/Lenkung/Handbremse, Position/Hoehe, Motorsound und rendert einen Frame.
+ */
 function update() {
     if (isCrashed) {
         crashRot += crashSpinSpeed;
@@ -743,11 +845,15 @@ function update() {
         if (speed < CURVE_FORCE_SPEED_THRESHOLD) {
             curveForce *= speed / CURVE_FORCE_SPEED_THRESHOLD;
         }
+        if (keys.ShiftLeft) curveForce *= HANDBRAKE_CURVE_MUL;
         playerX -= curveForce;
     }
-    const steeringMul = Math.max(STEERING_MIN_FACTOR, speed / maxSpeed);
+    let steeringMul = Math.max(STEERING_MIN_FACTOR, speed / maxSpeed);
+    if (keys.ShiftLeft) steeringMul *= HANDBRAKE_STEERING_MUL;
     if (keys.ArrowLeft) playerX -= STEERING_FACTOR * steeringMul;
     if (keys.ArrowRight) playerX += STEERING_FACTOR * steeringMul;
+
+    if (keys.ShiftLeft && speed > 0) speed = Math.max(0, speed - HANDBRAKE_DECEL);
 
     playerX = Math.max(-2.5, Math.min(2.5, playerX));
 
