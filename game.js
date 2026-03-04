@@ -116,6 +116,8 @@ const GEAR_MAX_SPEEDS = [45, 90, 135, 180, 215, 250];
 const GEAR_MIN_SPEEDS = [0, 18, 38, 58, 85, 115];
 const RPM_REDLINE = 7000;
 const RPM_IDLE = 800;
+/** Beim Sprung (ohne Crash): RPM-Anzeige und Sound drehen so hoch („aufdingsen“). */
+const RPM_IN_AIR = 6400;
 
 let currentGear = 1;
 
@@ -703,10 +705,12 @@ function drawSpeedGauge(speedKmh) {
 
 /**
  * Zeichnet das komplette HUD: Lap/Zeit-Box, RPM-Gauge, Tacho, bei Crash den "CRASHED!"-Overlay.
+ * @param {number} [displayRpm] - Anzuzeigende Drehzahl (optional; sonst aus speed/Gang berechnet).
  */
-function drawHUD() {
+function drawHUD(displayRpm) {
+    const rpm = displayRpm != null ? displayRpm : computeRpm(speed, currentGear);
     ctx.fillStyle = 'rgba(0, 0, 0, 0.6)'; ctx.fillRect(15, 15, 200, 90);
-    drawRPMGauge(computeRpm(speed, currentGear));
+    drawRPMGauge(rpm);
     drawSpeedGauge(speed);
 
     // Lap, Zeit
@@ -818,7 +822,8 @@ function render() {
 
     ctx.restore();
 
-    drawHUD();
+    const inAirForHUD = !isCrashed && (playerY - trackElevation > 60);
+    drawHUD(inAirForHUD ? RPM_IN_AIR : undefined);
 }
 
 /**
@@ -1000,8 +1005,9 @@ function update() {
 
     playerX = Math.max(-2.5, Math.min(2.5, playerX));
 
+    const inAir = !isCrashed && (playerY > trackElevation + 60);
     const rpm = computeRpm(speed, currentGear);
-    updateEngineSound(rpm, keys.ArrowUp ? 1 : 0);
+    updateEngineSound(inAir ? RPM_IN_AIR : rpm, inAir ? 1 : (keys.ArrowUp ? 1 : 0));
 
     render();
     requestAnimationFrame(update);
