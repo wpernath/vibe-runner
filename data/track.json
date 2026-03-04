@@ -1,0 +1,27 @@
+{
+  "name": "Default",
+  "segmentCount": 2000,
+  "curves": [
+    { "start": 100, "end": 300, "strength": 1.5 },
+    { "start": 400, "end": 600, "strength": -3.5 },
+    { "start": 700, "end": 900, "strength": 3.0 },
+    { "start": 1200, "end": 1400, "strength": -2.5 }
+  ],
+  "hills": [
+    { "start": 150, "end": 400, "amplitude": 15000 },
+    { "start": 450, "end": 700, "amplitude": -12000 },
+    { "start": 800, "end": 1300, "amplitude": 35000 }
+  ],
+  "ramps": [
+    { "start": 610, "approachLen": 35, "riseLen": 100, "peakLen": 4, "dropLen": 6, "peakHeight": 2200, "straightAfter": 90, "landingFlat": 15 },
+    { "start": 1000, "approachLen": 35, "riseLen": 100, "peakLen": 4, "dropLen": 6, "peakHeight": 2200, "straightAfter": 90, "landingFlat": 15 },
+    { "start": 1580, "approachLen": 35, "riseLen": 100, "peakLen": 4, "dropLen": 6, "peakHeight": 2200, "straightAfter": 90, "landingFlat": 15 }
+  ],
+  "zones": [
+    { "start": 0, "end": 500, "type": "nature" },
+    { "start": 500, "end": 1000, "type": "city" },
+    { "start": 1000, "end": 1500, "type": "nature" },
+    { "start": 1500, "end": 2000, "type": "city" }
+  ],
+  "startSegmentCount": 6
+}

@@ -70,7 +70,8 @@ const GRAVITY_JUMP = 82;
 const LANDING_BOUNCE_THRESHOLD = 100;
 /** Bounce-Faktor (0–1): Anteil der Aufprallgeschwindigkeit, der zurückfedert. */
 const LANDING_BOUNCE_FACTOR = 0.38;
-const RAMPS = [
+/** Standard-Rampen (wird überschrieben, wenn Strecke aus data/ geladen wird). */
+let RAMPS = [
     { start: 610, approachLen: 35, riseLen: 100, peakLen: 4, dropLen: 6, peakHeight: 2200, straightAfter: 90, landingFlat: 15 },
     { start: 1000, approachLen: 35, riseLen: 100, peakLen: 4, dropLen: 6, peakHeight: 2200, straightAfter: 90, landingFlat: 15 },
     { start: 1580, approachLen: 35, riseLen: 100, peakLen: 4, dropLen: 6, peakHeight: 2200, straightAfter: 90, landingFlat: 15 }
@@ -363,66 +364,123 @@ const COLORS = {
 
 // --- Strecke generieren ---
 
+/**
+ * Liefert die eingebaute Standard-Streckendefinition (wird verwendet, wenn data/track.json fehlt).
+ * @returns {object} Strecken-JSON (segmentCount, curves, hills, ramps, zones, startSegmentCount).
+ */
+function getDefaultTrack() {
+    return {
+        name: 'Default',
+        segmentCount: 2000,
+        curves: [
+            { start: 100, end: 300, strength: 1.5 },
+            { start: 400, end: 600, strength: -3.5 },
+            { start: 700, end: 900, strength: 3.0 },
+            { start: 1200, end: 1400, strength: -2.5 }
+        ],
+        hills: [
+            { start: 150, end: 400, amplitude: 15000 },
+            { start: 450, end: 700, amplitude: -12000 },
+            { start: 800, end: 1300, amplitude: 35000 }
+        ],
+        ramps: [
+            { start: 610, approachLen: 35, riseLen: 100, peakLen: 4, dropLen: 6, peakHeight: 2200, straightAfter: 90, landingFlat: 15 },
+            { start: 1000, approachLen: 35, riseLen: 100, peakLen: 4, dropLen: 6, peakHeight: 2200, straightAfter: 90, landingFlat: 15 },
+            { start: 1580, approachLen: 35, riseLen: 100, peakLen: 4, dropLen: 6, peakHeight: 2200, straightAfter: 90, landingFlat: 15 }
+        ],
+        zones: [
+            { start: 0, end: 500, type: 'nature' },
+            { start: 500, end: 1000, type: 'city' },
+            { start: 1000, end: 1500, type: 'nature' },
+            { start: 1500, end: 2000, type: 'city' }
+        ],
+        startSegmentCount: 6
+    };
+}
+
+/**
+ * Lädt Streckendaten aus dem data-Verzeichnis (data/track.json).
+ * Optional: ?track=dateiname lädt data/dateiname.json (ohne .json).
+ * @returns {Promise<object|null>} Parsed JSON oder null bei Fehler.
+ */
+function loadTrackData() {
+    const params = new URLSearchParams(document.location.search);
+    const name = params.get('track') || 'track';
+    const url = `data/${name}.json`;
+    return fetch(url)
+        .then(res => res.ok ? res.json() : null)
+        .catch(() => null);
+}
+
 /** Terrain-Höhe ohne Rampen (nur Hügel). Für weiche Übergänge nach Rampen-Landung. */
-function getTerrainY(n) {
+function getTerrainY(n, hills) {
+    if (!hills || !hills.length) return 0;
     let y = 0;
-    if (n > 150 && n < 400) y = Math.sin((n - 150) / 250 * Math.PI) * 15000;
-    if (n > 450 && n < 700) y = -Math.sin((n - 450) / 250 * Math.PI) * 12000;
-    if (n > 800 && n < 1300) y = Math.sin((n - 800) / 500 * Math.PI) * 35000;
+    for (const h of hills) {
+        if (n > h.start && n < h.end) {
+            const len = h.end - h.start;
+            y += Math.sin((n - h.start) / len * Math.PI) * (h.amplitude || 0);
+        }
+    }
     return y;
 }
 
 /**
- * Baut die komplette Strecke (2000 Segmente) und platziert NPC-Autos.
- * Fuellt die globalen Arrays `segments` und `cars`. Segment-Daten: Kurve, Hoehe, Sprites (Baeume, Gebaeude, Laternen, Schilder), Farbe.
+ * Baut die komplette Strecke aus Streckendaten (JSON) und platziert NPC-Autos.
+ * Fuellt die globalen Arrays `segments` und `cars`. Wird mit loadTrackData() geladenen Daten oder getDefaultTrack() aufgerufen.
+ * @param {object} trackData - Streckendefinition: segmentCount, curves[], hills[], ramps[], zones[], startSegmentCount.
  */
-function buildRoad() {
+function buildRoad(trackData) {
+    if (!trackData) trackData = getDefaultTrack();
+    const segmentCount = trackData.segmentCount || 2000;
+    const curves = trackData.curves || [];
+    const hills = trackData.hills || [];
+    const ramps = trackData.ramps || [];
+    const zones = trackData.zones || [];
+    const startSegmentCount = trackData.startSegmentCount ?? 6;
+
+    RAMPS = ramps;
     segments = [];
 
     const noCurveSegments = new Set();
-    for (const r of RAMPS) {
+    for (const r of ramps) {
         const rampEnd = r.start + r.riseLen + r.peakLen + r.dropLen;
-        for (let i = r.start; i < rampEnd + r.straightAfter; i++) {
-            noCurveSegments.add(i);
-        }
+        for (let i = r.start; i < rampEnd + (r.straightAfter || 0); i++) noCurveSegments.add(i);
         const approachStart = r.start - (r.approachLen || 0);
-        for (let i = approachStart; i < r.start; i++) {
-            noCurveSegments.add(i);
-        }
+        for (let i = approachStart; i < r.start; i++) noCurveSegments.add(i);
     }
 
-    for (let n = 0; n < 2000; n++) {
+    function getZoneType(n) {
+        for (const z of zones) {
+            if (n >= z.start && n < z.end) return z.type || 'nature';
+        }
+        return (Math.floor(n / 500) % 2 === 0) ? 'nature' : 'city';
+    }
+
+    for (let n = 0; n < segmentCount; n++) {
         let curve = 0;
-        let y = 0;
+        let y = getTerrainY(n, hills);
         let color = Math.floor(n / 3) % 2 ? COLORS.DARK : COLORS.LIGHT;
+        if (n < startSegmentCount) color = COLORS.START;
 
-        if (n < 6) color = COLORS.START;
-
-        if (n > 100 && n < 300) curve = 1.5;
-        if (n > 400 && n < 600) curve = -3.5;
-        if (n > 700 && n < 900) curve = 3.0;
-        if (n > 1200 && n < 1400) curve = -2.5;
-
-        if (n > 150 && n < 400) y = Math.sin((n - 150) / 250 * Math.PI) * 15000;
-        if (n > 450 && n < 700) y = -Math.sin((n - 450) / 250 * Math.PI) * 12000;
-        if (n > 800 && n < 1300) y = Math.sin((n - 800) / 500 * Math.PI) * 35000;
+        for (const c of curves) {
+            if (n > c.start && n < c.end) curve = c.strength || 0;
+        }
 
         let rampTakeoff = false;
-        for (const r of RAMPS) {
-            const approachStart = r.start - (r.approachLen || 0);
+        for (const r of ramps) {
             const riseEnd = r.start + r.riseLen;
             const peakEnd = riseEnd + r.peakLen;
             const rampEnd = peakEnd + r.dropLen;
-            const landingEnd = rampEnd + (r.landingFlat || 0);
             if (n >= r.start && n < rampEnd) {
                 if (n < riseEnd) {
-                    y += r.peakHeight * (n - r.start) / r.riseLen;
+                    y += (r.peakHeight || 0) * (n - r.start) / (r.riseLen || 1);
                 } else if (n < peakEnd) {
-                    y += r.peakHeight;
+                    y += r.peakHeight || 0;
                     if (n === peakEnd - 1) rampTakeoff = true;
                 } else {
-                    const dropProgress = (n - peakEnd + 1) / r.dropLen;
-                    y += r.peakHeight * Math.max(0, 1 - dropProgress);
+                    const dropProgress = (n - peakEnd + 1) / (r.dropLen || 1);
+                    y += (r.peakHeight || 0) * Math.max(0, 1 - dropProgress);
                     if (n === peakEnd) rampTakeoff = true;
                 }
             }
@@ -431,10 +489,9 @@ function buildRoad() {
         if (noCurveSegments.has(n)) curve = 0;
 
         let segmentSprites = [];
+        const zone = getZoneType(n);
 
-        let zone = Math.floor(n / 500) % 2; // 0 = Natur, 1 = Stadt
-
-        if (zone === 0) {
+        if (zone === 'nature') {
             if (n % 5 === 0) {
                 let side = Math.random() > 0.5 ? 1 : -1;
                 let treeType = Math.random() > 0.5 ? 'TREE_PINE' : 'TREE_LEAFY';
@@ -459,11 +516,10 @@ function buildRoad() {
             }
         }
 
-        if (n % (zone === 0 ? 40 : 80) === 0 && Math.abs(curve) > 1) {
+        if (n % (zone === 'nature' ? 40 : 80) === 0 && Math.abs(curve) > 1) {
             segmentSprites.push({ type: 'SIGN', offset: curve > 0 ? -2.0 : 2.0 });
         }
 
-        // Debug: Segmentnummer am Strassenrand
         segmentSprites.push({ type: 'SEGMENT_SIGN', offset: 2.0, data: { segmentIndex: n } });
 
         segments.push({
@@ -478,10 +534,11 @@ function buildRoad() {
         });
     }
 
+    const trackLength = segmentCount * segmentLength;
     cars = [];
     for (let i = 0; i < 100; i++) {
         cars.push({
-            z: Math.random() * (2000 * segmentLength),
+            z: Math.random() * trackLength,
             offset: 0.25 + Math.random() * 0.6,
             speed: 40 + Math.random() * 60,
             dir: 1,
@@ -869,7 +926,7 @@ function checkStaticObstacleCollision(trackState) {
  * @param {{ trackElevation: number }} trackState - Aktueller Streckenzustand (fuer Hoehenpruefung).
  */
 function updateNPCsAndCheckCollision(trackState) {
-    const maxZ = 2000 * segmentLength;
+    const maxZ = segments.length * segmentLength;
     for (let i = 0; i < segments.length; i++) segments[i].cars = [];
     for (let i = 0; i < cars.length; i++) {
         const car = cars[i];
@@ -1013,5 +1070,12 @@ function update() {
     requestAnimationFrame(update);
 }
 
-buildRoad();
-update();
+loadTrackData()
+    .then(data => {
+        buildRoad(data || getDefaultTrack());
+        update();
+    })
+    .catch(() => {
+        buildRoad(getDefaultTrack());
+        update();
+    });
