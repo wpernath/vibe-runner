@@ -5,11 +5,11 @@ let height = canvas.height;
 
 const gameContainer = document.getElementById('gameContainer');
 
-const DESKTOP_CANVAS_WIDTH = 800;
-const DESKTOP_CANVAS_HEIGHT = 600;
+const DESKTOP_CANVAS_WIDTH = 1024;
+const DESKTOP_CANVAS_HEIGHT = 768;
 
 /**
- * Resizes the canvas: on desktop keeps 800x600 so projection looks correct; on mobile/touch fills the container (fullscreen).
+ * Resizes the canvas: on desktop uses 1024x768; on mobile/touch fills the container (fullscreen).
  */
 function resizeCanvas() {
     const isMobile = window.matchMedia('(max-width: 768px), (pointer: coarse)').matches;
