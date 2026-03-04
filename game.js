@@ -62,6 +62,20 @@ const cameraDepth = 0.84;
 const cameraHeight = 1200;
 const roadWidth = 3000;
 
+// Rampen (Sprungschanzen): sehr langer Anstieg, damit sie in der Perspektive wie Rampen wirken
+const RAMP_LAUNCH_VELOCITY = 520;
+/** Schwerkraft pro Frame beim Sprung (kleiner = längerer Flug). */
+const GRAVITY_JUMP = 82;
+/** Beim Landen: Aufprall ab dieser Fallgeschwindigkeit löst einen kleinen Bounce aus. */
+const LANDING_BOUNCE_THRESHOLD = 100;
+/** Bounce-Faktor (0–1): Anteil der Aufprallgeschwindigkeit, der zurückfedert. */
+const LANDING_BOUNCE_FACTOR = 0.38;
+const RAMPS = [
+    { start: 610, approachLen: 35, riseLen: 100, peakLen: 4, dropLen: 6, peakHeight: 2200, straightAfter: 90, landingFlat: 15 },
+    { start: 1000, approachLen: 35, riseLen: 100, peakLen: 4, dropLen: 6, peakHeight: 2200, straightAfter: 90, landingFlat: 15 },
+    { start: 1580, approachLen: 35, riseLen: 100, peakLen: 4, dropLen: 6, peakHeight: 2200, straightAfter: 90, landingFlat: 15 }
+];
+
 // Kollision & Crash-Konstanten
 const CRASH_RESET_GROUND_OFFSET = 100;
 /** Nach Crash-Reset: so viele ms lang keine erneute Crash-Auslösung (verhindert Crash-Loop mit NPCs) */
@@ -347,12 +361,34 @@ const COLORS = {
 
 // --- Strecke generieren ---
 
+/** Terrain-Höhe ohne Rampen (nur Hügel). Für weiche Übergänge nach Rampen-Landung. */
+function getTerrainY(n) {
+    let y = 0;
+    if (n > 150 && n < 400) y = Math.sin((n - 150) / 250 * Math.PI) * 15000;
+    if (n > 450 && n < 700) y = -Math.sin((n - 450) / 250 * Math.PI) * 12000;
+    if (n > 800 && n < 1300) y = Math.sin((n - 800) / 500 * Math.PI) * 35000;
+    return y;
+}
+
 /**
  * Baut die komplette Strecke (2000 Segmente) und platziert NPC-Autos.
  * Fuellt die globalen Arrays `segments` und `cars`. Segment-Daten: Kurve, Hoehe, Sprites (Baeume, Gebaeude, Laternen, Schilder), Farbe.
  */
 function buildRoad() {
     segments = [];
+
+    const noCurveSegments = new Set();
+    for (const r of RAMPS) {
+        const rampEnd = r.start + r.riseLen + r.peakLen + r.dropLen;
+        for (let i = r.start; i < rampEnd + r.straightAfter; i++) {
+            noCurveSegments.add(i);
+        }
+        const approachStart = r.start - (r.approachLen || 0);
+        for (let i = approachStart; i < r.start; i++) {
+            noCurveSegments.add(i);
+        }
+    }
+
     for (let n = 0; n < 2000; n++) {
         let curve = 0;
         let y = 0;
@@ -368,6 +404,29 @@ function buildRoad() {
         if (n > 150 && n < 400) y = Math.sin((n - 150) / 250 * Math.PI) * 15000;
         if (n > 450 && n < 700) y = -Math.sin((n - 450) / 250 * Math.PI) * 12000;
         if (n > 800 && n < 1300) y = Math.sin((n - 800) / 500 * Math.PI) * 35000;
+
+        let rampTakeoff = false;
+        for (const r of RAMPS) {
+            const approachStart = r.start - (r.approachLen || 0);
+            const riseEnd = r.start + r.riseLen;
+            const peakEnd = riseEnd + r.peakLen;
+            const rampEnd = peakEnd + r.dropLen;
+            const landingEnd = rampEnd + (r.landingFlat || 0);
+            if (n >= r.start && n < rampEnd) {
+                if (n < riseEnd) {
+                    y += r.peakHeight * (n - r.start) / r.riseLen;
+                } else if (n < peakEnd) {
+                    y += r.peakHeight;
+                    if (n === peakEnd - 1) rampTakeoff = true;
+                } else {
+                    const dropProgress = (n - peakEnd + 1) / r.dropLen;
+                    y += r.peakHeight * Math.max(0, 1 - dropProgress);
+                    if (n === peakEnd) rampTakeoff = true;
+                }
+            }
+        }
+
+        if (noCurveSegments.has(n)) curve = 0;
 
         let segmentSprites = [];
 
@@ -402,6 +461,9 @@ function buildRoad() {
             segmentSprites.push({ type: 'SIGN', offset: curve > 0 ? -2.0 : 2.0 });
         }
 
+        // Debug: Segmentnummer am Strassenrand
+        segmentSprites.push({ type: 'SEGMENT_SIGN', offset: 2.0, data: { segmentIndex: n } });
+
         segments.push({
             z: n * segmentLength,
             y: y,
@@ -409,7 +471,8 @@ function buildRoad() {
             sprites: segmentSprites,
             cars: [],
             color: color,
-            p1: { x: 0, y: 0, w: 0 }
+            p1: { x: 0, y: 0, w: 0 },
+            rampTakeoff: rampTakeoff
         });
     }
 
@@ -558,6 +621,15 @@ function drawProceduralSprite(spriteObj, destX, destY, destW, clipY) {
         ctx.fillStyle = '#EEE'; ctx.fillRect(destX - signW / 2, destY - poleH - signH, signW, signH);
         ctx.fillStyle = '#D00'; ctx.fillRect(destX - signW / 2 + 5 * s, destY - poleH - signH + 5 * s, signW - 10 * s, signH - 10 * s);
         ctx.fillStyle = '#EEE'; ctx.fillRect(destX - signW / 2 + 15 * s, destY - poleH - signH + 15 * s, signW - 30 * s, signH - 30 * s);
+    } else if (spriteObj.type === 'SEGMENT_SIGN') {
+        let signW = 100 * s, signH = 60 * s, poleH = 180 * s, poleW = 8 * s;
+        const num = (spriteObj.data && spriteObj.data.segmentIndex != null) ? String(spriteObj.data.segmentIndex) : '?';
+        ctx.fillStyle = '#555'; ctx.fillRect(destX - poleW / 2, destY - poleH, poleW, poleH);
+        ctx.fillStyle = '#1a1a1a'; ctx.fillRect(destX - signW / 2, destY - poleH - signH, signW, signH);
+        ctx.fillStyle = '#FFF';
+        ctx.font = `bold ${Math.max(10, Math.round(28 * s))}px "Courier New", monospace`;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(num, destX, destY - poleH - signH / 2);
     } else if (spriteObj.type === 'NPC_CAR') {
         let car = spriteObj.data; let carW = 140 * s; let carH = 70 * s;
         ctx.fillStyle = '#111'; ctx.fillRect(destX - carW / 2.2, destY - carH / 4, carW / 4, carH / 2); ctx.fillRect(destX + carW / 2.2 - carW / 4, destY - carH / 4, carW / 4, carH / 2);
@@ -890,9 +962,23 @@ function update() {
 
     ({ startSegIndex, offset, baseSeg, nextSeg, trackElevation } = getTrackState(position));
 
-    playerVelY -= 120;
+    if (!isCrashed && baseSeg.rampTakeoff && playerY <= trackElevation + 120 && playerVelY <= 80 && speed > 30) {
+        const launchMul = Math.min(1, speed / maxSpeed);
+        playerVelY = RAMP_LAUNCH_VELOCITY * (0.5 + 0.5 * launchMul);
+    }
+
+    const wasInAir = playerY > trackElevation + 60;
+    playerVelY -= GRAVITY_JUMP;
     playerY += playerVelY;
-    if (playerY < trackElevation) { playerY = trackElevation; playerVelY = 0; }
+    if (playerY < trackElevation) {
+        const impactVel = playerVelY;
+        playerY = trackElevation;
+        if (wasInAir && impactVel < -LANDING_BOUNCE_THRESHOLD) {
+            playerVelY = Math.min(180, -impactVel * LANDING_BOUNCE_FACTOR);
+        } else {
+            playerVelY = 0;
+        }
+    }
 
     let currentSeg = segments[startSegIndex];
     if (speed > 0) skyOffset += currentSeg.curve * (speed / maxSpeed) * 4;
