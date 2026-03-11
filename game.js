@@ -376,7 +376,8 @@ function getDefaultTrack() {
             { start: 100, end: 300, strength: 1.5 },
             { start: 400, end: 600, strength: -3.5 },
             { start: 700, end: 900, strength: 3.0 },
-            { start: 1200, end: 1400, strength: -2.5 }
+            { start: 1200, end: 1400, strength: -2.5 },
+            { start: 1600, end: 1800, strength: 1.5 }
         ],
         hills: [
             { start: 150, end: 400, amplitude: 15000 },
@@ -457,6 +458,8 @@ function buildRoad(trackData) {
         return (Math.floor(n / 500) % 2 === 0) ? 'nature' : 'city';
     }
 
+    const curveBlendLen = 25;
+
     for (let n = 0; n < segmentCount; n++) {
         let curve = 0;
         let y = getTerrainY(n, hills);
@@ -464,7 +467,16 @@ function buildRoad(trackData) {
         if (n < startSegmentCount) color = COLORS.START;
 
         for (const c of curves) {
-            if (n > c.start && n < c.end) curve = c.strength || 0;
+            const len = (c.end || c.start) - c.start;
+            const blend = Math.min(curveBlendLen, Math.max(0, Math.floor(len / 4)));
+            if (n >= c.start && n < (c.end || c.start)) {
+                let t = 1;
+                if (blend > 0) {
+                    if (n < c.start + blend) t = (n - c.start) / blend;
+                    else if (n >= c.end - blend) t = (c.end - n) / blend;
+                }
+                curve += (c.strength || 0) * t;
+            }
         }
 
         let rampTakeoff = false;
@@ -532,6 +544,14 @@ function buildRoad(trackData) {
             p1: { x: 0, y: 0, w: 0 },
             rampTakeoff: rampTakeoff
         });
+    }
+
+    // Rundkurs schließen: Summe aller Kurven = 0, damit Start = Ziel
+    let totalCurve = 0;
+    for (let i = 0; i < segments.length; i++) totalCurve += segments[i].curve;
+    if (segments.length > 0 && Math.abs(totalCurve) > 1e-6) {
+        const correction = totalCurve / segments.length;
+        for (let i = 0; i < segments.length; i++) segments[i].curve -= correction;
     }
 
     const trackLength = segmentCount * segmentLength;
@@ -761,7 +781,128 @@ function drawSpeedGauge(speedKmh) {
 }
 
 /**
- * Zeichnet das komplette HUD: Lap/Zeit-Box, RPM-Gauge, Tacho, bei Crash den "CRASHED!"-Overlay.
+ * Zeichnet eine kompakte Streckenübersicht: Start/Ziel und aktueller Streckenstand.
+ * Kleiner Fortschrittsbalken links unten.
+ */
+function drawTrackOverview() {
+    if (!segments.length) return;
+    const trackLength = segments.length * segmentLength;
+    const progress = trackLength > 0 ? (position % trackLength) / trackLength : 0;
+
+    const barW = 130;
+    const barH = 10;
+    const x = 15;
+    const y = height - 28;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+    ctx.fillRect(x, y, barW, barH);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x, y, barW, barH);
+
+    // Start/Ziel links
+    ctx.fillStyle = '#FFF';
+    ctx.font = 'bold 9px "Courier New", monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('S/Z', x + 4, y + barH / 2);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+    ctx.fillRect(x + 22, y + 2, 2, barH - 4);
+
+    // Aktuelle Position (Punkt)
+    const px = x + 26 + (barW - 34) * progress;
+    ctx.fillStyle = '#e62222';
+    ctx.beginPath();
+    ctx.arc(px, y + barH / 2, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#FFF';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    ctx.restore();
+}
+
+/**
+ * Zeichnet eine Übersichtskarte (Minimap): Streckenverlauf von oben und aktuelle Spielerposition.
+ * Rechts unten, kompakt.
+ */
+function drawTrackMap() {
+    if (!segments.length) return;
+    const trackLength = segments.length * segmentLength;
+    const step = Math.max(1, Math.floor(segments.length / 150));
+    let pathX = 0;
+    const points = [{ x: 0, z: 0 }];
+    for (let i = 0; i < segments.length; i += step) {
+        for (let j = i; j < Math.min(i + step, segments.length); j++) pathX += segments[j].curve;
+        points.push({ x: pathX, z: Math.min(i + step, segments.length) * segmentLength });
+    }
+    if (points.length < 2) return;
+
+    let minX = points[0].x, maxX = points[0].x, minZ = 0, maxZ = trackLength;
+    for (const p of points) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+    }
+    const rangeX = maxX - minX || 1;
+    const rangeZ = maxZ - minZ || 1;
+
+    const mapW = 120;
+    const mapH = 100;
+    const pad = 8;
+    const left = width - 15 - mapW;
+    const top = height - 15 - mapH;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+    ctx.fillRect(left, top, mapW, mapH);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(left, top, mapW, mapH);
+
+    const toScreenX = (x) => left + pad + ((x - minX) / rangeX) * (mapW - 2 * pad);
+    const toScreenZ = (z) => top + mapH - pad - (z / maxZ) * (mapH - 2 * pad);
+
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(toScreenX(points[0].x), toScreenZ(points[0].z));
+    for (let i = 1; i < points.length; i++) ctx.lineTo(toScreenX(points[i].x), toScreenZ(points[i].z));
+    ctx.lineTo(toScreenX(points[0].x), toScreenZ(points[0].z));
+    ctx.stroke();
+
+    ctx.fillStyle = 'rgba(255, 255, 0, 0.9)';
+    ctx.beginPath();
+    ctx.arc(toScreenX(points[0].x), toScreenZ(0), 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#FFF';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    const posInLap = position % trackLength;
+    let playerPathX = 0;
+    const segIndex = Math.floor(posInLap / segmentLength) % segments.length;
+    const offsetInSeg = posInLap % segmentLength;
+    for (let i = 0; i < segIndex; i++) playerPathX += segments[i].curve;
+    playerPathX += (offsetInSeg / segmentLength) * segments[segIndex].curve;
+    const playerScreenX = toScreenX(playerPathX);
+    const playerScreenZ = toScreenZ(posInLap);
+
+    ctx.fillStyle = '#e62222';
+    ctx.beginPath();
+    ctx.arc(playerScreenX, playerScreenZ, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#FFF';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    ctx.restore();
+}
+
+/**
+ * Zeichnet das komplette HUD: Lap/Zeit-Box, RPM-Gauge, Tacho, Streckenübersicht, bei Crash den "CRASHED!"-Overlay.
  * @param {number} [displayRpm] - Anzuzeigende Drehzahl (optional; sonst aus speed/Gang berechnet).
  */
 function drawHUD(displayRpm) {
@@ -774,6 +915,9 @@ function drawHUD(displayRpm) {
     ctx.fillStyle = '#FFF'; ctx.font = 'bold 20px "Courier New"'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
     ctx.fillText(`LAP:  ${currentLap}`, 25, 40); ctx.fillText(`TIME: ${currentLapTime.toFixed(2)}s`, 25, 65);
     if (lastLapTime > 0) { ctx.fillStyle = '#AAA'; ctx.fillText(`LAST: ${lastLapTime.toFixed(2)}s`, 25, 90); }
+
+    drawTrackOverview();
+    drawTrackMap();
 
     if (isCrashed) {
         ctx.fillStyle = 'rgba(255, 0, 0, 0.7)';
