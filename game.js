@@ -137,6 +137,9 @@ const AIR_BRAKE_MUL = 0.0;
 // Geschwindigkeitsverlust bei harter Landung (proportional zu Aufprallgeschwindigkeit)
 const LANDING_SPEED_LOSS_FACTOR = 0.0004;
 
+// Hangabtriebskraft: Schwerkraft entlang der Steigung (positiv = bergauf bremst, negativ = bergab beschleunigt)
+const SLOPE_GRAVITY_FACTOR = 0.55;
+
 // --- Getriebe (manuell) ---
 const NUM_GEARS = 6;
 /** Maximalgeschwindigkeit pro Gang (nur im höchsten Gang wird maxSpeed erreicht) */
@@ -1388,6 +1391,13 @@ function update(timestamp) {
 
     // --- Luftwiderstand (quadratisch) ---
     speed = Math.max(0, speed - AERO_DRAG * speed * speed * dt60);
+
+    // --- Hangabtriebskraft (bergauf bremst, bergab beschleunigt) ---
+    if (!inAir) {
+        const slope = (nextSeg.y - baseSeg.y) / segmentLength;
+        const slopeForce = -slope * SLOPE_GRAVITY_FACTOR;
+        speed = Math.max(0, speed + slopeForce * dt60);
+    }
 
     // --- Handbremse Verzögerung ---
     if (handbrakeAmount > 0 && speed > 0) {
