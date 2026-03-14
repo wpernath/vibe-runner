@@ -59,13 +59,13 @@ Some browsers restrict file access when opening `file://` directly. If the game 
    - **Node (npx)**: `npx serve -p 8000`
 2. Open `http://localhost:8000/run.html` in your browser.
 
-### Option 3: Im Netzwerk für Handy/iPad
+### Option 3: On the network (phone/tablet)
 
-Zum Testen auf dem Handy oder iPad im gleichen WLAN:
+To test on a phone or tablet on the same Wi‑Fi:
 
-1. Im Projektordner ausführen: `./serve.sh` (optional mit Port: `./serve.sh 3000`)
-2. Die ausgegebene URL (z. B. `http://192.168.1.42:8080/run.html`) auf dem Gerät im Browser öffnen.
-3. Server mit Ctrl+C beenden.
+1. From the project root, run `./serve.sh` (optionally with a port: `./serve.sh 3000`).
+2. Open the printed URL (e.g. `http://192.168.1.42:8080/run.html`) in the device’s browser.
+3. Stop the server with Ctrl+C.
 
 ### Option 4: Docker
 
@@ -81,7 +81,7 @@ Open `http://localhost:8080/run.html`. The image runs as non-root and listens on
 ### Requirements
 
 - A browser with JavaScript enabled and support for Canvas 2D and the Web Audio API (all current desktop and mobile browsers).
-- Keyboard oder Touch-Steuerung (auf Mobilgeräten).
+- Keyboard or touch controls (on mobile devices).
 
 ---
 
@@ -102,7 +102,7 @@ runningout/
 ├── data/          # Track JSON (e.g. track.json)
 ├── Dockerfile     # Container image (nginx, port 8080)
 ├── nginx.conf     # Nginx config for container
-├── serve.sh       # Lokaler Server für Netzwerk-Zugriff (Handy/iPad)
+├── serve.sh       # Local server for network access (phone/tablet)
 ├── .github/       # CI: Docker build on push
 ├── openshift/     # Deployment manifests for OpenShift
 ├── README.md      # This file
