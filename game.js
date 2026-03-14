@@ -348,6 +348,28 @@ document.querySelectorAll('#touchControls [data-key]').forEach(btn => {
     btn.addEventListener('contextmenu', e => e.preventDefault());
 });
 
+// Touch gear shift buttons (data-action="gearUp" / "gearDown")
+document.querySelectorAll('#touchControls [data-action]').forEach(btn => {
+    const action = btn.dataset.action;
+
+    function handleGear() {
+        startEngineSound();
+        if (action === 'gearUp' && currentGear < NUM_GEARS) {
+            currentGear++;
+        } else if (action === 'gearDown' && currentGear > 1) {
+            currentGear--;
+            speed = Math.min(speed, GEAR_MAX_SPEEDS[currentGear - 1]);
+        }
+    }
+
+    btn.addEventListener('touchstart', e => e.preventDefault(), { passive: false });
+    btn.addEventListener('pointerdown', e => {
+        e.preventDefault();
+        handleGear();
+    });
+    btn.addEventListener('contextmenu', e => e.preventDefault());
+});
+
 // Prevent context menu (copy/paste) on long-press anywhere in touch controls (iOS etc.)
 document.addEventListener('contextmenu', e => {
     if (e.target.closest('#touchControls')) e.preventDefault();
@@ -532,8 +554,6 @@ function buildRoad(trackData) {
             segmentSprites.push({ type: 'SIGN', offset: curve > 0 ? -2.0 : 2.0 });
         }
 
-        segmentSprites.push({ type: 'SEGMENT_SIGN', offset: 2.0, data: { segmentIndex: n } });
-
         segments.push({
             z: n * segmentLength,
             y: y,
@@ -700,15 +720,6 @@ function drawProceduralSprite(spriteObj, destX, destY, destW, clipY) {
         ctx.fillStyle = '#EEE'; ctx.fillRect(destX - signW / 2, destY - poleH - signH, signW, signH);
         ctx.fillStyle = '#D00'; ctx.fillRect(destX - signW / 2 + 5 * s, destY - poleH - signH + 5 * s, signW - 10 * s, signH - 10 * s);
         ctx.fillStyle = '#EEE'; ctx.fillRect(destX - signW / 2 + 15 * s, destY - poleH - signH + 15 * s, signW - 30 * s, signH - 30 * s);
-    } else if (spriteObj.type === 'SEGMENT_SIGN') {
-        let signW = 100 * s, signH = 60 * s, poleH = 180 * s, poleW = 8 * s;
-        const num = (spriteObj.data && spriteObj.data.segmentIndex != null) ? String(spriteObj.data.segmentIndex) : '?';
-        ctx.fillStyle = '#555'; ctx.fillRect(destX - poleW / 2, destY - poleH, poleW, poleH);
-        ctx.fillStyle = '#1a1a1a'; ctx.fillRect(destX - signW / 2, destY - poleH - signH, signW, signH);
-        ctx.fillStyle = '#FFF';
-        ctx.font = `bold ${Math.max(10, Math.round(28 * s))}px "Courier New", monospace`;
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText(num, destX, destY - poleH - signH / 2);
     } else if (spriteObj.type === 'NPC_CAR') {
         let car = spriteObj.data; let carW = 140 * s; let carH = 70 * s;
         ctx.fillStyle = '#111'; ctx.fillRect(destX - carW / 2.2, destY - carH / 4, carW / 4, carH / 2); ctx.fillRect(destX + carW / 2.2 - carW / 4, destY - carH / 4, carW / 4, carH / 2);

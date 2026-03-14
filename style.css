@@ -68,11 +68,17 @@ canvas {
 .touch-controls .touch-btn {
     position: absolute;
     pointer-events: auto;
-    border: none;
+    border: 2px solid rgba(255, 255, 255, 0.35);
     border-radius: 12px;
-    background: rgba(255, 255, 255, 0.2);
-    color: rgba(255, 255, 255, 0.9);
-    font-size: 0;
+    background: rgba(255, 255, 255, 0.18);
+    color: rgba(255, 255, 255, 0.85);
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 18px;
+    font-weight: bold;
+    line-height: 1;
+    display: flex;
+    justify-content: center;
+    align-items: center;
     padding: 0;
     min-width: 56px;
     min-height: 56px;
@@ -84,17 +90,16 @@ canvas {
 }
 
 .touch-controls .touch-btn:active {
-    background: rgba(255, 255, 255, 0.4);
+    background: rgba(255, 255, 255, 0.45);
+    border-color: rgba(255, 255, 255, 0.6);
 }
 
 /* Steering: left side */
 .touch-left {
-    left: 12px;
-    bottom: 24px;
-    width: 72px;
-    height: 72px;
     left: 16px;
     bottom: 28px;
+    width: 72px;
+    height: 72px;
 }
 
 .touch-right {
@@ -124,6 +129,63 @@ canvas {
     bottom: 28px;
     width: 64px;
     height: 64px;
+}
+
+/* Gear shift: center-left, stacked vertically */
+.touch-gear-up {
+    left: 16px;
+    bottom: 180px;
+    width: 60px;
+    height: 52px;
+    font-size: 22px;
+    background: rgba(80, 180, 255, 0.25);
+    border-color: rgba(80, 180, 255, 0.45);
+}
+
+.touch-gear-down {
+    left: 16px;
+    bottom: 118px;
+    width: 60px;
+    height: 52px;
+    font-size: 22px;
+    background: rgba(80, 180, 255, 0.25);
+    border-color: rgba(80, 180, 255, 0.45);
+}
+
+.touch-gear-up:active,
+.touch-gear-down:active {
+    background: rgba(80, 180, 255, 0.5);
+    border-color: rgba(80, 180, 255, 0.7);
+}
+
+.touch-gas {
+    background: rgba(80, 220, 80, 0.22);
+    border-color: rgba(80, 220, 80, 0.4);
+}
+
+.touch-gas:active {
+    background: rgba(80, 220, 80, 0.45);
+    border-color: rgba(80, 220, 80, 0.65);
+}
+
+.touch-brake {
+    background: rgba(255, 80, 80, 0.22);
+    border-color: rgba(255, 80, 80, 0.4);
+}
+
+.touch-brake:active {
+    background: rgba(255, 80, 80, 0.45);
+    border-color: rgba(255, 80, 80, 0.65);
+}
+
+.touch-handbrake {
+    background: rgba(255, 180, 40, 0.22);
+    border-color: rgba(255, 180, 40, 0.4);
+}
+
+.touch-handbrake:active {
+    background: rgba(255, 180, 40, 0.45);
+    border-color: rgba(255, 180, 40, 0.65);
 }
 
 /* Mobile / touch: fullscreen game + show touch controls */
@@ -162,6 +224,7 @@ canvas {
     .touch-controls .touch-btn {
         min-width: 48px;
         min-height: 48px;
+        font-size: 15px;
     }
 
     .touch-left, .touch-right {
@@ -186,5 +249,19 @@ canvas {
         right: 92px;
         width: 52px;
         height: 52px;
+    }
+
+    .touch-gear-up, .touch-gear-down {
+        width: 52px;
+        height: 44px;
+        font-size: 18px;
+    }
+
+    .touch-gear-up {
+        bottom: 160px;
+    }
+
+    .touch-gear-down {
+        bottom: 108px;
     }
 }
