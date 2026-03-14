@@ -88,26 +88,54 @@ const COLLISION_PLAYER_CAR_X = 0.3;
 /** Z-Reichweite für Kollision mit statischen Sprites (Bäume, Gebäude, …) */
 const COLLISION_STATIC_Z_RANGE = 280;
 
-// Seitenstreifen (ab |playerX| > ROAD_EDGE)
+// --- Physik-Tuning (alle Werte pro Frame bei 60 fps, dt-skaliert) ---
+const TARGET_FPS = 60;
+
+// Seitenstreifen (progressiv: Grip fällt ab, je weiter man neben der Straße ist)
 const ROAD_EDGE = 1.1;
 const SHOULDER_MAX_SPEED = 80;
 const SHOULDER_ACCEL = 0.2;
+const SHOULDER_GRIP_FALLOFF = 1.5;
 
-// Lenkung & Kurven
-const CURVE_FORCE_DIVISOR = 24000;
+// Lenkung mit Trägheit (steeringVel interpoliert zum Ziel statt direkter playerX-Änderung)
 const STEERING_FACTOR = 0.032;
-// Fliehkraft erst ab dieser Geschwindigkeit voll (darunter linear abgeschwächt), damit man aus dem Grünstreifen rauskommt
-const CURVE_FORCE_SPEED_THRESHOLD = 60;
-// Mindest-Lenkwirkung (Anteil), damit bei niedriger Geschwindigkeit noch gelenkt werden kann
 const STEERING_MIN_FACTOR = 0.25;
+const STEERING_ENGAGE_RATE = 0.12;
+const STEERING_RETURN_RATE = 0.08;
 
-// Handbremse (linke Shift): weniger Grip = Sliden in Kurven
+// Kurvenfliehkraft (quadratisch: v², gefährlicher bei Highspeed, milder bei Lowspeed)
+const CURVE_FORCE_DIVISOR = 3_600_000;
+const CURVE_FORCE_SPEED_THRESHOLD = 60;
+
+// Handbremse (progressiv: baut sich über ~0.25s auf, löst sich über ~0.17s)
 const HANDBRAKE_STEERING_MUL = 0.26;
 const HANDBRAKE_CURVE_MUL = 1.7;
-const HANDBRAKE_DECEL = 0.35;
+const HANDBRAKE_DECEL = 1.5;
+const HANDBRAKE_ENGAGE_RATE = 4.0;
+const HANDBRAKE_RELEASE_RATE = 6.0;
 
-// Schubabschaltung (kein Gas): Verzögerung pro Frame
-const COAST_DECEL = 0.4;
+// Bremse (geschwindigkeitsabhängig: bei niedrigem Tempo sanfter, kein Blockieren)
+const BRAKE_DECEL = 5.0;
+
+// Motorbremse pro Gang (1. Gang = starke Motorbremse, taktisches Runterschalten vor Kurven)
+const GEAR_COAST_DECEL = [1.0, 0.7, 0.5, 0.4, 0.3, 0.2];
+
+// Gang-abhängige Beschleunigung (1. Gang = aggressiv, 6. Gang = schwach)
+const GEAR_ACCEL_RATES = [1.4, 1.1, 0.85, 0.65, 0.5, 0.35];
+
+// Redline-Begrenzer: ab 6200 RPM fällt die Beschleunigung ab, bei 7000 RPM = 0
+const REDLINE_DROPOFF_START = 6200;
+
+// Aerodynamischer Luftwiderstand (quadratisch: bremst bei Highspeed natürlich ab)
+const AERO_DRAG = 0.000006;
+
+// Kontrolle in der Luft: stark reduziert
+const AIR_STEERING_MUL = 0.1;
+const AIR_THROTTLE_MUL = 0.0;
+const AIR_BRAKE_MUL = 0.0;
+
+// Geschwindigkeitsverlust bei harter Landung (proportional zu Aufprallgeschwindigkeit)
+const LANDING_SPEED_LOSS_FACTOR = 0.0004;
 
 // --- Getriebe (manuell) ---
 const NUM_GEARS = 6;
@@ -121,6 +149,9 @@ const RPM_IDLE = 800;
 const RPM_IN_AIR = 6400;
 
 let currentGear = 1;
+let lastTimestamp = 0;
+let steeringVel = 0;
+let handbrakeAmount = 0;
 
 let segments = [];
 let cars = [];
@@ -1176,7 +1207,7 @@ function crashNPCCar(car, impactSpeed, lateralDir) {
     playCrashSound();
 }
 
-function updateNPCsAndCheckCollision(trackState) {
+function updateNPCsAndCheckCollision(trackState, dt60) {
     const maxZ = segments.length * segmentLength;
     for (let i = 0; i < segments.length; i++) segments[i].cars = [];
 
@@ -1184,21 +1215,21 @@ function updateNPCsAndCheckCollision(trackState) {
         const car = cars[i];
 
         if (car.crashed) {
-            car.crashTimer++;
-            car.crashRot += car.crashSpin;
-            car.crashSpin *= 0.985;
-            car.crashVelY -= NPC_CRASH_GRAVITY;
-            car.crashY += car.crashVelY;
+            car.crashTimer += dt60;
+            car.crashRot += car.crashSpin * dt60;
+            car.crashSpin *= Math.pow(0.985, dt60);
+            car.crashVelY -= NPC_CRASH_GRAVITY * dt60;
+            car.crashY += car.crashVelY * dt60;
             if (car.crashY < 0) {
                 car.crashY = 0;
                 car.crashVelY = Math.abs(car.crashVelY) > 30
                     ? -car.crashVelY * 0.3 : 0;
                 car.crashSpin *= 0.5;
             }
-            car.offset += car.crashVelX;
-            car.crashVelX *= 0.97;
-            car.z += car.crashVelZ;
-            car.crashVelZ *= 0.95;
+            car.offset += car.crashVelX * dt60;
+            car.crashVelX *= Math.pow(0.97, dt60);
+            car.z += car.crashVelZ * dt60;
+            car.crashVelZ *= Math.pow(0.95, dt60);
 
             if (car.z < 0) car.z += maxZ;
             if (car.z >= maxZ) car.z -= maxZ;
@@ -1216,7 +1247,7 @@ function updateNPCsAndCheckCollision(trackState) {
             continue;
         }
 
-        car.z += car.dir * car.speed;
+        car.z += car.dir * car.speed * dt60;
         if (car.z < 0) car.z += maxZ;
         if (car.z >= maxZ) car.z -= maxZ;
         segments[Math.floor(car.z / segmentLength) % segments.length].cars.push(car);
@@ -1258,12 +1289,18 @@ function updateNPCsAndCheckCollision(trackState) {
  * Haupt-Game-Loop (per requestAnimationFrame). Aktualisiert Crash-Zustand, Rundenzeit,
  * Kollisionen, Beschleunigung/Lenkung/Handbremse, Position/Hoehe, Motorsound und rendert einen Frame.
  */
-function update() {
+function update(timestamp) {
+    if (!lastTimestamp) lastTimestamp = timestamp || performance.now();
+    const dtRaw = Math.min(((timestamp || performance.now()) - lastTimestamp) / 1000, 0.05);
+    lastTimestamp = timestamp || performance.now();
+    const dt60 = dtRaw * TARGET_FPS;
+
     if (isCrashed) {
-        crashRot += crashSpinSpeed;
-        playerVelY -= 15;
-        playerY += playerVelY;
-        position += speed;
+        crashRot += crashSpinSpeed * dt60;
+        playerVelY -= 15 * dt60;
+        playerY += playerVelY * dt60;
+        speed = Math.max(0, speed - 2 * dt60);
+        position += speed * dt60;
 
         const trackStateCrash = getTrackState(position);
         const groundHeight = trackStateCrash.trackElevation;
@@ -1277,17 +1314,18 @@ function update() {
             crashRot = 0;
             playerX = 0;
             currentGear = 1;
+            steeringVel = 0;
+            handbrakeAmount = 0;
         }
 
         updateEngineSound(RPM_IDLE, 0);
-
         render();
         requestAnimationFrame(update);
         return;
     }
 
     let trackLength = segments.length * segmentLength;
-    if (position > currentLap * trackLength) {
+    if (position >= trackLength) {
         lastLapTime = currentLapTime;
         currentLap++;
         lapStartTime = Date.now();
@@ -1297,74 +1335,127 @@ function update() {
 
     let trackState = getTrackState(position);
     checkStaticObstacleCollision(trackState);
-    if (!isCrashed) updateNPCsAndCheckCollision(trackState);
+    if (!isCrashed) updateNPCsAndCheckCollision(trackState, dt60);
 
     let { startSegIndex, offset, baseSeg, nextSeg, trackElevation } = trackState;
-    const onShoulder = Math.abs(playerX) > ROAD_EDGE;
-    const gearMaxSpeed = GEAR_MAX_SPEEDS[currentGear - 1];
-    const effectiveMaxSpeed = onShoulder
-        ? Math.min(SHOULDER_MAX_SPEED, gearMaxSpeed)
-        : gearMaxSpeed;
-    let accelRate = onShoulder ? SHOULDER_ACCEL : 0.7;
+    const inAir = playerY > trackElevation + 60;
 
-    // In hohen Gängen bei niedriger Geschwindigkeit kaum beschleunigen (nicht „anfahren“)
+    // --- Handbremse (progressiv) ---
+    if (keys.ShiftLeft) {
+        handbrakeAmount = Math.min(1, handbrakeAmount + HANDBRAKE_ENGAGE_RATE * dtRaw);
+    } else {
+        handbrakeAmount = Math.max(0, handbrakeAmount - HANDBRAKE_RELEASE_RATE * dtRaw);
+    }
+
+    // --- Seitenstreifen (progressiv) ---
+    const shoulderDepth = Math.max(0, Math.abs(playerX) - ROAD_EDGE);
+    const shoulderFactor = Math.min(1, shoulderDepth * SHOULDER_GRIP_FALLOFF);
+    const onShoulder = shoulderFactor > 0;
+
+    // --- Gang, RPM, Redline ---
+    const gearMaxSpeed = GEAR_MAX_SPEEDS[currentGear - 1];
+    const rpm = computeRpm(speed, currentGear);
+
+    let accelRate = GEAR_ACCEL_RATES[currentGear - 1];
+
+    if (rpm > REDLINE_DROPOFF_START) {
+        const dropoff = 1 - (rpm - REDLINE_DROPOFF_START) / (RPM_REDLINE - REDLINE_DROPOFF_START);
+        accelRate *= Math.max(0, dropoff);
+    }
+
     const gearMinSpeed = GEAR_MIN_SPEEDS[currentGear - 1];
-    if (speed < gearMinSpeed && keys.ArrowUp) {
+    if (speed < gearMinSpeed) {
         accelRate *= 0.06;
     }
 
-    if (keys.ArrowUp) speed = Math.min(speed + accelRate, effectiveMaxSpeed);
-    else if (keys.ArrowDown) speed = Math.max(speed - 6, 0);
-    else speed = Math.max(speed - COAST_DECEL, 0);
+    if (onShoulder) {
+        accelRate = Math.min(accelRate, SHOULDER_ACCEL);
+    }
 
-    if (onShoulder && speed > SHOULDER_MAX_SPEED) speed = Math.max(SHOULDER_MAX_SPEED, speed - 5);
-    speed = Math.min(speed, effectiveMaxSpeed);
+    // --- Beschleunigung / Bremse / Motorbremse ---
+    const throttleEff = inAir ? AIR_THROTTLE_MUL : 1;
+    const brakeEff = inAir ? AIR_BRAKE_MUL : 1;
 
-    position += speed;
+    if (keys.ArrowUp) {
+        speed = Math.min(speed + accelRate * throttleEff * dt60, gearMaxSpeed);
+    } else if (keys.ArrowDown) {
+        const brakePower = BRAKE_DECEL * Math.min(1, 0.3 + 0.7 * speed / 60) * brakeEff;
+        speed = Math.max(0, speed - brakePower * dt60);
+    } else {
+        const coastDecel = GEAR_COAST_DECEL[currentGear - 1];
+        speed = Math.max(0, speed - coastDecel * dt60);
+    }
+
+    // --- Luftwiderstand (quadratisch) ---
+    speed = Math.max(0, speed - AERO_DRAG * speed * speed * dt60);
+
+    // --- Handbremse Verzögerung ---
+    if (handbrakeAmount > 0 && speed > 0) {
+        speed = Math.max(0, speed - HANDBRAKE_DECEL * handbrakeAmount * dt60);
+    }
+
+    // --- Seitenstreifen Geschwindigkeitsreduktion ---
+    if (onShoulder) {
+        const shoulderMax = Math.max(10, SHOULDER_MAX_SPEED * (1 - shoulderFactor * 0.5));
+        if (speed > shoulderMax) {
+            speed = Math.max(shoulderMax, speed - (3 + shoulderFactor * 4) * dt60);
+        }
+    }
+
+    position += speed * dt60;
 
     ({ startSegIndex, offset, baseSeg, nextSeg, trackElevation } = getTrackState(position));
 
+    // --- Rampen-Absprung ---
     if (!isCrashed && baseSeg.rampTakeoff && playerY <= trackElevation + 120 && playerVelY <= 80 && speed > 30) {
         const launchMul = Math.min(1, speed / maxSpeed);
         playerVelY = RAMP_LAUNCH_VELOCITY * (0.5 + 0.5 * launchMul);
     }
 
+    // --- Vertikale Physik ---
     const wasInAir = playerY > trackElevation + 60;
-    playerVelY -= GRAVITY_JUMP;
-    playerY += playerVelY;
+    playerVelY -= GRAVITY_JUMP * dt60;
+    playerY += playerVelY * dt60;
     if (playerY < trackElevation) {
         const impactVel = playerVelY;
         playerY = trackElevation;
         if (wasInAir && impactVel < -LANDING_BOUNCE_THRESHOLD) {
             playerVelY = Math.min(180, -impactVel * LANDING_BOUNCE_FACTOR);
+            const speedLoss = Math.abs(impactVel) * LANDING_SPEED_LOSS_FACTOR * speed;
+            speed = Math.max(0, speed - speedLoss);
         } else {
             playerVelY = 0;
         }
     }
 
+    // --- Kurvenfliehkraft (quadratisch) ---
     let currentSeg = segments[startSegIndex];
-    if (speed > 0) skyOffset += currentSeg.curve * (speed / maxSpeed) * 4;
+    if (speed > 0) skyOffset += currentSeg.curve * (speed / maxSpeed) * 4 * dt60;
 
-    if (speed > 0) {
-        let curveForce = (currentSeg.curve * speed) / CURVE_FORCE_DIVISOR;
+    if (speed > 0 && !inAir) {
+        let curveForce = (currentSeg.curve * speed * speed) / CURVE_FORCE_DIVISOR;
         if (speed < CURVE_FORCE_SPEED_THRESHOLD) {
             curveForce *= speed / CURVE_FORCE_SPEED_THRESHOLD;
         }
-        if (keys.ShiftLeft) curveForce *= HANDBRAKE_CURVE_MUL;
-        playerX -= curveForce;
+        curveForce *= (1 + handbrakeAmount * (HANDBRAKE_CURVE_MUL - 1));
+        playerX -= curveForce * dt60;
     }
-    let steeringMul = Math.max(STEERING_MIN_FACTOR, speed / maxSpeed);
-    if (keys.ShiftLeft) steeringMul *= HANDBRAKE_STEERING_MUL;
-    if (keys.ArrowLeft) playerX -= STEERING_FACTOR * steeringMul;
-    if (keys.ArrowRight) playerX += STEERING_FACTOR * steeringMul;
 
-    if (keys.ShiftLeft && speed > 0) speed = Math.max(0, speed - HANDBRAKE_DECEL);
+    // --- Lenkung mit Trägheit ---
+    const steerInput = (keys.ArrowLeft ? -1 : 0) + (keys.ArrowRight ? 1 : 0);
+    let steerFactor = Math.max(STEERING_MIN_FACTOR, speed / maxSpeed);
+    steerFactor *= (1 - handbrakeAmount * (1 - HANDBRAKE_STEERING_MUL));
+    if (inAir) steerFactor *= AIR_STEERING_MUL;
+
+    const steerTarget = steerInput * STEERING_FACTOR * steerFactor;
+    const lerpRate = steerInput !== 0 ? STEERING_ENGAGE_RATE : STEERING_RETURN_RATE;
+    steeringVel += (steerTarget - steeringVel) * Math.min(1, lerpRate * dt60);
+    playerX += steeringVel * dt60;
 
     playerX = Math.max(-2.5, Math.min(2.5, playerX));
 
-    const inAir = !isCrashed && (playerY > trackElevation + 60);
-    const rpm = computeRpm(speed, currentGear);
-    updateEngineSound(inAir ? RPM_IN_AIR : rpm, inAir ? 1 : (keys.ArrowUp ? 1 : 0));
+    const rpmForSound = computeRpm(speed, currentGear);
+    updateEngineSound(inAir ? RPM_IN_AIR : rpmForSound, inAir ? 1 : (keys.ArrowUp ? 1 : 0));
 
     render();
     requestAnimationFrame(update);
@@ -1373,9 +1464,9 @@ function update() {
 loadTrackData()
     .then(data => {
         buildRoad(data || getDefaultTrack());
-        update();
+        requestAnimationFrame(update);
     })
     .catch(() => {
         buildRoad(getDefaultTrack());
-        update();
+        requestAnimationFrame(update);
     });
