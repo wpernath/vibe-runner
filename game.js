@@ -357,6 +357,14 @@ const COLORS = {
     DARK: { road: '#5b5b5b', grass: '#10AA10', rumble: '#555' },
     LIGHT: { road: '#696969', grass: '#009A00', rumble: '#FFF' },
     START: { road: '#FFF', grass: '#FFF', rumble: '#111' },
+    DESERT_DARK: { road: '#6a5a4a', grass: '#C9A86C', rumble: '#8B7355' },
+    DESERT_LIGHT: { road: '#7d6b58', grass: '#D4B896', rumble: '#9B7D5E' },
+    SNOW_DARK: { road: '#6a6e72', grass: '#E8EEF2', rumble: '#9BA3AA' },
+    SNOW_LIGHT: { road: '#7d8288', grass: '#F0F4F8', rumble: '#B0B8C0' },
+    ICE_DARK: { road: '#5a6a7a', grass: '#B8D4E8', rumble: '#7a9ab0' },
+    ICE_LIGHT: { road: '#6c7d8e', grass: '#D0E4F0', rumble: '#8fA8B8' },
+    ICELAND_GREEN_DARK: { road: '#4a5a4a', grass: '#3d6b3d', rumble: '#5a6a5a' },
+    ICELAND_GREEN_LIGHT: { road: '#5a6a5a', grass: '#4d7d4d', rumble: '#6a7a6a' },
     SKY_TOP: '#1E90FF', SKY_BOTTOM: '#72D7EE',
     MOUNTAIN_1: '#3E4E6E', MOUNTAIN_2: '#2E3E5E',
     CLOUD: 'rgba(255, 255, 255, 0.3)'
@@ -463,7 +471,13 @@ function buildRoad(trackData) {
     for (let n = 0; n < segmentCount; n++) {
         let curve = 0;
         let y = getTerrainY(n, hills);
-        let color = Math.floor(n / 3) % 2 ? COLORS.DARK : COLORS.LIGHT;
+        const zone = getZoneType(n);
+        let color;
+        if (zone === 'desert') color = Math.floor(n / 3) % 2 ? COLORS.DESERT_DARK : COLORS.DESERT_LIGHT;
+        else if (zone === 'snow') color = Math.floor(n / 3) % 2 ? COLORS.SNOW_DARK : COLORS.SNOW_LIGHT;
+        else if (zone === 'ice') color = Math.floor(n / 3) % 2 ? COLORS.ICE_DARK : COLORS.ICE_LIGHT;
+        else if (zone === 'iceland_green') color = Math.floor(n / 3) % 2 ? COLORS.ICELAND_GREEN_DARK : COLORS.ICELAND_GREEN_LIGHT;
+        else color = Math.floor(n / 3) % 2 ? COLORS.DARK : COLORS.LIGHT;
         if (n < startSegmentCount) color = COLORS.START;
 
         for (const c of curves) {
@@ -501,9 +515,29 @@ function buildRoad(trackData) {
         if (noCurveSegments.has(n)) curve = 0;
 
         let segmentSprites = [];
-        const zone = getZoneType(n);
 
         if (zone === 'nature') {
+            if (n % 5 === 0) {
+                let side = Math.random() > 0.5 ? 1 : -1;
+                let treeType = Math.random() > 0.5 ? 'TREE_PINE' : 'TREE_LEAFY';
+                segmentSprites.push({ type: treeType, offset: side * (1.6 + Math.random() * 1.2) });
+            }
+        } else if (zone === 'desert') {
+            if (n % 8 === 0) {
+                let side = Math.random() > 0.5 ? 1 : -1;
+                segmentSprites.push({ type: 'CACTUS', offset: side * (1.5 + Math.random() * 1.0) });
+            }
+        } else if (zone === 'snow') {
+            if (n % 6 === 0) {
+                let side = Math.random() > 0.5 ? 1 : -1;
+                segmentSprites.push({ type: Math.random() > 0.6 ? 'SNOWY_PINE' : 'ROCK', offset: side * (1.5 + Math.random() * 1.0) });
+            }
+        } else if (zone === 'ice') {
+            if (n % 10 === 0) {
+                let side = Math.random() > 0.5 ? 1 : -1;
+                segmentSprites.push({ type: 'ROCK', offset: side * (1.6 + Math.random() * 0.8) });
+            }
+        } else if (zone === 'iceland_green') {
             if (n % 5 === 0) {
                 let side = Math.random() > 0.5 ? 1 : -1;
                 let treeType = Math.random() > 0.5 ? 'TREE_PINE' : 'TREE_LEAFY';
@@ -528,7 +562,8 @@ function buildRoad(trackData) {
             }
         }
 
-        if (n % (zone === 'nature' ? 40 : 80) === 0 && Math.abs(curve) > 1) {
+        const signInterval = (zone === 'nature' || zone === 'desert' || zone === 'snow' || zone === 'ice' || zone === 'iceland_green') ? 40 : 80;
+        if (n % signInterval === 0 && Math.abs(curve) > 1) {
             segmentSprites.push({ type: 'SIGN', offset: curve > 0 ? -2.0 : 2.0 });
         }
 
@@ -666,6 +701,23 @@ function drawProceduralSprite(spriteObj, destX, destY, destW, clipY) {
         ctx.arc(destX, destY - treeH * 0.8, treeW * 0.35, 0, Math.PI * 2);
         ctx.arc(destX - treeW * 0.25, destY - treeH * 0.5, treeW * 0.3, 0, Math.PI * 2);
         ctx.arc(destX + treeW * 0.25, destY - treeH * 0.5, treeW * 0.3, 0, Math.PI * 2); ctx.fill();
+    } else if (spriteObj.type === 'CACTUS') {
+        let cactW = 120 * s, cactH = 280 * s;
+        ctx.fillStyle = '#4a6741'; ctx.fillRect(destX - cactW / 6, destY - cactH, cactW / 3, cactH);
+        ctx.fillStyle = '#5a7a51'; ctx.fillRect(destX - cactW / 4, destY - cactH * 0.6, cactW / 5, cactH * 0.5);
+        ctx.fillRect(destX + cactW / 8, destY - cactH * 0.35, cactW / 5, cactH * 0.35);
+        ctx.beginPath(); ctx.ellipse(destX, destY - cactH - 15 * s, cactW * 0.2, 25 * s, 0, 0, Math.PI * 2); ctx.fill();
+    } else if (spriteObj.type === 'ROCK') {
+        let rockW = 180 * s, rockH = 120 * s;
+        ctx.fillStyle = '#4a4a4a'; ctx.beginPath();
+        ctx.ellipse(destX, destY - rockH / 2, rockW / 2, rockH / 2, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#3a3a3a'; ctx.beginPath();
+        ctx.ellipse(destX - rockW * 0.15, destY - rockH * 0.4, rockW * 0.25, rockH * 0.4, 0, 0, Math.PI * 2); ctx.fill();
+    } else if (spriteObj.type === 'SNOWY_PINE') {
+        let treeW = 200 * s, treeH = 380 * s;
+        ctx.fillStyle = '#5a4a3a'; ctx.fillRect(destX - treeW / 6, destY - treeH / 4, treeW / 3, treeH / 4);
+        ctx.fillStyle = '#2d4a2d'; ctx.beginPath(); ctx.moveTo(destX, destY - treeH); ctx.lineTo(destX - treeW / 2, destY - treeH / 4); ctx.lineTo(destX + treeW / 2, destY - treeH / 4); ctx.fill();
+        ctx.fillStyle = '#E8EEF2'; ctx.beginPath(); ctx.moveTo(destX, destY - treeH * 0.85); ctx.lineTo(destX - treeW * 0.4, destY - treeH * 0.3); ctx.lineTo(destX + treeW * 0.4, destY - treeH * 0.3); ctx.fill();
     } else if (spriteObj.type === 'BUILDING') {
         let bData = spriteObj.data;
         let bW = 350 * s;
@@ -1048,7 +1100,7 @@ function checkStaticObstacleCollision(trackState) {
         for (let i = 0; i < seg.sprites.length; i++) {
             const sprite = seg.sprites[i];
             let spriteW = 0.5;
-            if (sprite.type === 'TREE_PINE' || sprite.type === 'TREE_LEAFY') spriteW = 0.45;
+            if (sprite.type === 'TREE_PINE' || sprite.type === 'TREE_LEAFY' || sprite.type === 'CACTUS' || sprite.type === 'ROCK' || sprite.type === 'SNOWY_PINE') spriteW = 0.45;
             if (sprite.type === 'BUILDING') spriteW = 0.9;
             if (sprite.type === 'STREETLIGHT') spriteW = 0.2;
             if (Math.abs(playerX - sprite.offset) >= spriteW) continue;

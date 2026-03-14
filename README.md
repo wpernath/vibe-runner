@@ -67,6 +67,17 @@ Zum Testen auf dem Handy oder iPad im gleichen WLAN:
 2. Die ausgegebene URL (z. B. `http://192.168.1.42:8080/run.html`) auf dem Gerät im Browser öffnen.
 3. Server mit Ctrl+C beenden.
 
+### Option 4: Docker
+
+Build and run as a container (e.g. for deployment):
+
+```bash
+docker build -t runningout:latest .
+docker run -p 8080:8080 runningout:latest
+```
+
+Open `http://localhost:8080/run.html`. The image runs as non-root and listens on port 8080 for easy deployment on **OpenShift**; see [openshift/README.md](openshift/README.md).
+
 ### Requirements
 
 - A browser with JavaScript enabled and support for Canvas 2D and the Web Audio API (all current desktop and mobile browsers).
@@ -74,16 +85,28 @@ Zum Testen auf dem Handy oder iPad im gleichen WLAN:
 
 ---
 
+## Build pipeline
+
+- **GitHub Actions**: On push to `main`/`master`, the [Docker build workflow](.github/workflows/docker-build.yml) builds the image and pushes it to GitHub Container Registry (`ghcr.io/<owner>/<repo>`).
+- **OpenShift**: Use the manifests in `openshift/` to deploy (Deployment, Service, Route). The image is OpenShift-friendly (non-root, port 8080, `/health` for probes).
+
+---
+
 ## Project Structure
 
 ```
 runningout/
-├── run.html    # Entry page; canvas + script tag
-├── game.js     # Full game logic, rendering, audio
-├── style.css   # Layout and canvas styling
-├── serve.sh    # Lokaler Server für Netzwerk-Zugriff (Handy/iPad)
-├── README.md   # This file
-└── LICENSE     # License terms
+├── run.html       # Entry page; canvas + script tag
+├── game.js        # Full game logic, rendering, audio
+├── style.css      # Layout and canvas styling
+├── data/          # Track JSON (e.g. track.json)
+├── Dockerfile     # Container image (nginx, port 8080)
+├── nginx.conf     # Nginx config for container
+├── serve.sh       # Lokaler Server für Netzwerk-Zugriff (Handy/iPad)
+├── .github/       # CI: Docker build on push
+├── openshift/     # Deployment manifests for OpenShift
+├── README.md      # This file
+└── LICENSE        # License terms
 ```
 
 ---

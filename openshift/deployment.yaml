@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runningout
+  labels:
+    app: runningout
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: runningout
+  template:
+    metadata:
+      labels:
+        app: runningout
+    spec:
+      containers:
+        - name: runningout
+          image: runningout:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu: "10m"
+            limits:
+              memory: "64Mi"
+              cpu: "100m"
+      # OpenShift: run as non-root (image already uses non-root user)
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: runningout
+  labels:
+    app: runningout
+spec:
+  selector:
+    app: runningout
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+      name: http
+  type: ClusterIP
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: runningout
+  labels:
+    app: runningout
+spec:
+  to:
+    kind: Service
+    name: runningout
+    weight: 100
+  port:
+    targetPort: 8080
+  tls:
+    termination: edge
+  wildcardPolicy: None
