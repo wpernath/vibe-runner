@@ -9,7 +9,7 @@
     { "start": 1600, "end": 1800, "strength": 1.5 }
   ],
   "hills": [
-    { "start": 150, "end": 400, "amplitude": 15000 },
+    { "start": 150, "end": 400, "amplitude": 35000 },
     { "start": 450, "end": 700, "amplitude": -12000 },
     { "start": 800, "end": 1300, "amplitude": 35000 }
   ],

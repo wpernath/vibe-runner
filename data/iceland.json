@@ -1,0 +1,50 @@
+{
+  "name": "Iceland",
+  "segmentCount": 5000,
+  "curves": [
+    { "start": 100, "end": 350, "strength": 2.0 },
+    { "start": 400, "end": 700, "strength": -2.0 },
+    { "start": 800, "end": 1100, "strength": 1.5 },
+    { "start": 1200, "end": 1500, "strength": -1.5 },
+    { "start": 1600, "end": 1950, "strength": 2.0 },
+    { "start": 2000, "end": 2350, "strength": -2.0 },
+    { "start": 2400, "end": 2700, "strength": 1.0 },
+    { "start": 2750, "end": 3050, "strength": -1.0 },
+    { "start": 3100, "end": 3400, "strength": 1.2 },
+    { "start": 3450, "end": 3750, "strength": -1.2 },
+    { "start": 3800, "end": 4150, "strength": 1.5 },
+    { "start": 4200, "end": 4550, "strength": -1.5 },
+    { "start": 4600, "end": 4900, "strength": 0.8 },
+    { "start": 4950, "end": 5000, "strength": -4.8 }
+  ],
+  "hills": [
+    { "start": 50, "end": 400, "amplitude": 18000 },
+    { "start": 450, "end": 800, "amplitude": -14000 },
+    { "start": 850, "end": 1200, "amplitude": 22000 },
+    { "start": 1250, "end": 1650, "amplitude": -16000 },
+    { "start": 1700, "end": 2100, "amplitude": 20000 },
+    { "start": 2150, "end": 2550, "amplitude": -12000 },
+    { "start": 2600, "end": 3000, "amplitude": 25000 },
+    { "start": 3050, "end": 3450, "amplitude": -18000 },
+    { "start": 3500, "end": 3900, "amplitude": 19000 },
+    { "start": 3950, "end": 4350, "amplitude": -15000 },
+    { "start": 4400, "end": 4800, "amplitude": 17000 },
+    { "start": 4850, "end": 5000, "amplitude": -8000 }
+  ],
+  "ramps": [
+    { "start": 620, "approachLen": 35, "riseLen": 100, "peakLen": 4, "dropLen": 6, "peakHeight": 2200, "straightAfter": 90, "landingFlat": 15 },
+    { "start": 1350, "approachLen": 35, "riseLen": 100, "peakLen": 4, "dropLen": 6, "peakHeight": 2200, "straightAfter": 90, "landingFlat": 15 },
+    { "start": 2180, "approachLen": 35, "riseLen": 100, "peakLen": 4, "dropLen": 6, "peakHeight": 2200, "straightAfter": 90, "landingFlat": 15 },
+    { "start": 3280, "approachLen": 35, "riseLen": 100, "peakLen": 4, "dropLen": 6, "peakHeight": 2200, "straightAfter": 90, "landingFlat": 15 },
+    { "start": 4120, "approachLen": 35, "riseLen": 100, "peakLen": 4, "dropLen": 6, "peakHeight": 2200, "straightAfter": 90, "landingFlat": 15 }
+  ],
+  "zones": [
+    { "start": 0, "end": 800, "type": "snow" },
+    { "start": 800, "end": 1600, "type": "iceland_green" },
+    { "start": 1600, "end": 2400, "type": "ice" },
+    { "start": 2400, "end": 3200, "type": "iceland_green" },
+    { "start": 3200, "end": 4000, "type": "snow" },
+    { "start": 4000, "end": 5000, "type": "ice" }
+  ],
+  "startSegmentCount": 6
+}

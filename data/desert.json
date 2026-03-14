@@ -1,0 +1,31 @@
+{
+  "name": "Desert",
+  "segmentCount": 2800,
+  "curves": [
+    { "start": 150, "end": 400, "strength": 2.0 },
+    { "start": 500, "end": 800, "strength": -2.5 },
+    { "start": 1000, "end": 1300, "strength": 2.0 },
+    { "start": 1500, "end": 1800, "strength": -2.0 },
+    { "start": 2000, "end": 2300, "strength": 1.5 },
+    { "start": 2400, "end": 2700, "strength": -1.0 },
+    { "start": 2750, "end": 2800, "strength": 2.0 }
+  ],
+  "hills": [
+    { "start": 200, "end": 500, "amplitude": 12000 },
+    { "start": 800, "end": 1100, "amplitude": -10000 },
+    { "start": 1400, "end": 1700, "amplitude": 18000 },
+    { "start": 2200, "end": 2550, "amplitude": -8000 }
+  ],
+  "ramps": [
+    { "start": 420, "approachLen": 35, "riseLen": 100, "peakLen": 4, "dropLen": 6, "peakHeight": 2200, "straightAfter": 90, "landingFlat": 15 },
+    { "start": 1150, "approachLen": 35, "riseLen": 100, "peakLen": 4, "dropLen": 6, "peakHeight": 2200, "straightAfter": 90, "landingFlat": 15 },
+    { "start": 1920, "approachLen": 35, "riseLen": 100, "peakLen": 4, "dropLen": 6, "peakHeight": 2200, "straightAfter": 90, "landingFlat": 15 }
+  ],
+  "zones": [
+    { "start": 0, "end": 700, "type": "desert" },
+    { "start": 700, "end": 1400, "type": "city" },
+    { "start": 1400, "end": 2100, "type": "desert" },
+    { "start": 2100, "end": 2800, "type": "city" }
+  ],
+  "startSegmentCount": 6
+}
