@@ -617,7 +617,16 @@ function buildRoad(trackData) {
             offset: 0.25 + Math.random() * 0.6,
             speed: 40 + Math.random() * 60,
             dir: 1,
-            color: `hsl(${Math.floor(Math.random() * 360)}, 80%, 50%)`
+            color: `hsl(${Math.floor(Math.random() * 360)}, 80%, 50%)`,
+            crashed: false,
+            crashRot: 0,
+            crashSpin: 0,
+            crashVelX: 0,
+            crashVelZ: 0,
+            crashY: 0,
+            crashVelY: 0,
+            crashTimer: 0,
+            originalSpeed: 0
         });
     }
 }
@@ -774,11 +783,34 @@ function drawProceduralSprite(spriteObj, destX, destY, destW, clipY) {
         ctx.fillStyle = '#EEE'; ctx.fillRect(destX - signW / 2 + 15 * s, destY - poleH - signH + 15 * s, signW - 30 * s, signH - 30 * s);
     } else if (spriteObj.type === 'NPC_CAR') {
         let car = spriteObj.data; let carW = 140 * s; let carH = 70 * s;
-        ctx.fillStyle = '#111'; ctx.fillRect(destX - carW / 2.2, destY - carH / 4, carW / 4, carH / 2); ctx.fillRect(destX + carW / 2.2 - carW / 4, destY - carH / 4, carW / 4, carH / 2);
-        ctx.fillStyle = car.color; ctx.fillRect(destX - carW / 2, destY - carH, carW, carH * 0.8);
-        ctx.fillStyle = '#333'; ctx.fillRect(destX - carW / 3, destY - carH + carH * 0.1, carW * 0.66, carH * 0.3);
+        const npcDrawY = destY - (car.crashY || 0) * s * 0.4;
+
+        if (car.crashed && car.crashY > 0) {
+            ctx.fillStyle = 'rgba(0,0,0,0.25)';
+            ctx.beginPath();
+            ctx.ellipse(destX, destY, Math.max(5, carW * 0.4), 6 * s, 0, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        if (car.crashed && car.crashRot) {
+            ctx.save();
+            ctx.translate(destX, npcDrawY - carH / 2);
+            ctx.rotate(car.crashRot);
+            ctx.translate(-destX, -(npcDrawY - carH / 2));
+        }
+
+        ctx.fillStyle = '#111';
+        ctx.fillRect(destX - carW / 2.2, npcDrawY - carH / 4, carW / 4, carH / 2);
+        ctx.fillRect(destX + carW / 2.2 - carW / 4, npcDrawY - carH / 4, carW / 4, carH / 2);
+        ctx.fillStyle = car.color;
+        ctx.fillRect(destX - carW / 2, npcDrawY - carH, carW, carH * 0.8);
+        ctx.fillStyle = '#333';
+        ctx.fillRect(destX - carW / 3, npcDrawY - carH + carH * 0.1, carW * 0.66, carH * 0.3);
         if (car.dir === -1) ctx.fillStyle = '#FFFDE7'; else ctx.fillStyle = '#D00';
-        ctx.fillRect(destX - carW / 2 + 5 * s, destY - carH * 0.4, 25 * s, 12 * s); ctx.fillRect(destX + carW / 2 - 30 * s, destY - carH * 0.4, 25 * s, 12 * s);
+        ctx.fillRect(destX - carW / 2 + 5 * s, npcDrawY - carH * 0.4, 25 * s, 12 * s);
+        ctx.fillRect(destX + carW / 2 - 30 * s, npcDrawY - carH * 0.4, 25 * s, 12 * s);
+
+        if (car.crashed && car.crashRot) ctx.restore();
     }
     ctx.restore();
 }
@@ -1126,35 +1158,96 @@ function checkStaticObstacleCollision(trackState) {
     }
 }
 
-/**
- * Bewegt alle NPC-Autos (z, Segment-Zuordnung) und prueft Kollision mit dem Spieler.
- * Bei Kollision: Crash bei entgegenkommendem Auto, sonst Abbremsen und leichte Verschiebung.
- * Beruecksichtigt Crash-Invulnerabilitaet nach Reset.
- * @param {{ trackElevation: number }} trackState - Aktueller Streckenzustand (fuer Hoehenpruefung).
- */
+const NPC_CRASH_DURATION = 180;
+const NPC_CRASH_GRAVITY = 6;
+const NPC_RESPAWN_DELAY = 300;
+
+function crashNPCCar(car, impactSpeed, lateralDir) {
+    car.crashed = true;
+    car.crashTimer = 0;
+    car.originalSpeed = car.speed;
+    car.speed = 0;
+    car.crashSpin = (0.08 + Math.random() * 0.15) * (lateralDir >= 0 ? 1 : -1);
+    car.crashVelX = lateralDir * (0.02 + impactSpeed * 0.004);
+    car.crashVelZ = impactSpeed * 0.6;
+    car.crashVelY = Math.min(400, 80 + impactSpeed * 2.5);
+    car.crashY = 0;
+    car.crashRot = 0;
+    playCrashSound();
+}
+
 function updateNPCsAndCheckCollision(trackState) {
     const maxZ = segments.length * segmentLength;
     for (let i = 0; i < segments.length; i++) segments[i].cars = [];
+
     for (let i = 0; i < cars.length; i++) {
         const car = cars[i];
+
+        if (car.crashed) {
+            car.crashTimer++;
+            car.crashRot += car.crashSpin;
+            car.crashSpin *= 0.985;
+            car.crashVelY -= NPC_CRASH_GRAVITY;
+            car.crashY += car.crashVelY;
+            if (car.crashY < 0) {
+                car.crashY = 0;
+                car.crashVelY = Math.abs(car.crashVelY) > 30
+                    ? -car.crashVelY * 0.3 : 0;
+                car.crashSpin *= 0.5;
+            }
+            car.offset += car.crashVelX;
+            car.crashVelX *= 0.97;
+            car.z += car.crashVelZ;
+            car.crashVelZ *= 0.95;
+
+            if (car.z < 0) car.z += maxZ;
+            if (car.z >= maxZ) car.z -= maxZ;
+            segments[Math.floor(car.z / segmentLength) % segments.length].cars.push(car);
+
+            if (car.crashTimer > NPC_RESPAWN_DELAY) {
+                car.crashed = false;
+                car.crashRot = 0;
+                car.crashY = 0;
+                car.speed = car.originalSpeed;
+                car.offset = 0.25 + Math.random() * 0.6;
+                const playerZ = position % maxZ;
+                car.z = (playerZ + 4000 + Math.random() * 6000) % maxZ;
+            }
+            continue;
+        }
+
         car.z += car.dir * car.speed;
         if (car.z < 0) car.z += maxZ;
         if (car.z >= maxZ) car.z -= maxZ;
         segments[Math.floor(car.z / segmentLength) % segments.length].cars.push(car);
+
         const distToPlayerZ = Math.abs(car.z - (position % maxZ + COLLISION_Z_OFFSET));
         if (distToPlayerZ >= COLLISION_Z_RANGE || playerY > trackState.trackElevation + 1500) continue;
         if (Math.abs(playerX - car.offset) >= COLLISION_PLAYER_CAR_X) continue;
         if (Date.now() - crashResetAt < CRASH_INVULN_MS) continue;
 
+        const lateralDir = playerX >= car.offset ? 1 : -1;
+
         if (car.dir === -1) {
+            const impactSpeed = speed + car.speed;
+            crashNPCCar(car, impactSpeed, lateralDir);
             isCrashed = true;
-            playCrashSound();
             playerVelY = 300 + (speed * 4);
             crashSpinSpeed = 0.05 + (speed / maxSpeed) * 0.4;
-            car.speed = 0;
         } else {
-            speed = Math.min(speed, car.speed - 10);
-            playerX += (playerX >= car.offset ? 0.15 : -0.15);
+            const impactSpeed = Math.max(0, speed - car.speed);
+            if (impactSpeed > CRASH_SPEED_THRESHOLD) {
+                crashNPCCar(car, impactSpeed, lateralDir);
+                speed = Math.max(0, speed * 0.4);
+                if (impactSpeed > 120) {
+                    isCrashed = true;
+                    playerVelY = impactSpeed * 2;
+                    crashSpinSpeed = 0.05 + (impactSpeed / maxSpeed) * 0.3;
+                }
+            } else {
+                speed = Math.min(speed, car.speed);
+                playerX += lateralDir * 0.08;
+            }
         }
     }
 }
