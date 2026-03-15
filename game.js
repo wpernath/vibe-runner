@@ -54,7 +54,9 @@ let isCrashed = false;
 let crashRot = 0;
 let crashSpinSpeed = 0;
 /** Zeitstempel des letzten Crash-Resets (für Invulnerabilität) */
-let crashResetAt = 0;
+let crashResetAt = Date.now();
+
+const IN_AIR_THRESHOLD = 60;
 
 const maxSpeed = 250;
 const segmentLength = 200;
@@ -70,12 +72,6 @@ const GRAVITY_JUMP = 82;
 const LANDING_BOUNCE_THRESHOLD = 100;
 /** Bounce-Faktor (0–1): Anteil der Aufprallgeschwindigkeit, der zurückfedert. */
 const LANDING_BOUNCE_FACTOR = 0.38;
-/** Standard-Rampen (wird überschrieben, wenn Strecke aus data/ geladen wird). */
-let RAMPS = [
-    { start: 610, approachLen: 35, riseLen: 100, peakLen: 4, dropLen: 6, peakHeight: 2200, straightAfter: 90, landingFlat: 15 },
-    { start: 1000, approachLen: 35, riseLen: 100, peakLen: 4, dropLen: 6, peakHeight: 2200, straightAfter: 90, landingFlat: 15 },
-    { start: 1580, approachLen: 35, riseLen: 100, peakLen: 4, dropLen: 6, peakHeight: 2200, straightAfter: 90, landingFlat: 15 }
-];
 
 // Kollision & Crash-Konstanten
 const CRASH_RESET_GROUND_OFFSET = 100;
@@ -136,6 +132,18 @@ const AIR_BRAKE_MUL = 0.0;
 
 // Geschwindigkeitsverlust bei harter Landung (proportional zu Aufprallgeschwindigkeit)
 const LANDING_SPEED_LOSS_FACTOR = 0.0004;
+
+// Pitch-Kontrolle in der Luft (Pfeiltasten hoch/runter steuern Neigung)
+const PITCH_UP_GRAVITY_MUL = 0.45;
+const PITCH_DOWN_GRAVITY_MUL = 2.2;
+
+// Clean-Landing Bonus
+const CLEAN_LANDING_MAX_VEL = 80;
+const CLEAN_LANDING_BOOST = 10;
+
+// NPC-Sprungphysik
+const NPC_RAMP_LAUNCH_FACTOR = 0.65;
+const NPC_AIR_GRAVITY = 65;
 
 // Hangabtriebskraft: Schwerkraft entlang der Steigung (positiv = bergauf bremst, negativ = bergab beschleunigt)
 const SLOPE_GRAVITY_FACTOR = 0.55;
@@ -504,7 +512,6 @@ function buildRoad(trackData) {
     const zones = trackData.zones || [];
     const startSegmentCount = trackData.startSegmentCount ?? 6;
 
-    RAMPS = ramps;
     segments = [];
 
     const noCurveSegments = new Set();
@@ -646,11 +653,16 @@ function buildRoad(trackData) {
     const trackLength = segmentCount * segmentLength;
     cars = [];
     for (let i = 0; i < 100; i++) {
+        const isOncoming = i >= 80;
+        const dir = isOncoming ? -1 : 1;
+        const offset = isOncoming
+            ? -(0.25 + Math.random() * 0.4)
+            : 0.25 + Math.random() * 0.6;
         cars.push({
             z: Math.random() * trackLength,
-            offset: 0.25 + Math.random() * 0.6,
-            speed: 40 + Math.random() * 60,
-            dir: 1,
+            offset: offset,
+            speed: isOncoming ? 60 + Math.random() * 80 : 40 + Math.random() * 60,
+            dir: dir,
             color: `hsl(${Math.floor(Math.random() * 360)}, 80%, 50%)`,
             crashed: false,
             crashRot: 0,
@@ -660,7 +672,9 @@ function buildRoad(trackData) {
             crashY: 0,
             crashVelY: 0,
             crashTimer: 0,
-            originalSpeed: 0
+            originalSpeed: 0,
+            airY: 0,
+            airVelY: 0
         });
     }
 }
@@ -705,10 +719,17 @@ function drawQuad(color, x1, y1, w1, x2, y2, w2) {
  * Zeichnet Himmel, Wolken und Berge als Parallax-Hintergrund.
  * @param {number} horizonY - Bildschirm-Y der Horizontlinie.
  */
+let _cachedSkyGradient = null;
+let _cachedSkyH = 0;
+
 function drawParallaxLayers(horizonY) {
-    let gradient = ctx.createLinearGradient(0, 0, 0, height);
-    gradient.addColorStop(0, COLORS.SKY_TOP); gradient.addColorStop(1, COLORS.SKY_BOTTOM);
-    ctx.fillStyle = gradient; ctx.fillRect(0, 0, width, height);
+    if (!_cachedSkyGradient || _cachedSkyH !== height) {
+        _cachedSkyGradient = ctx.createLinearGradient(0, 0, 0, height);
+        _cachedSkyGradient.addColorStop(0, COLORS.SKY_TOP);
+        _cachedSkyGradient.addColorStop(1, COLORS.SKY_BOTTOM);
+        _cachedSkyH = height;
+    }
+    ctx.fillStyle = _cachedSkyGradient; ctx.fillRect(0, 0, width, height);
 
     let cloudBaseY = horizonY - 250;
     let cloudScrollX = skyOffset * 0.2;
@@ -817,12 +838,14 @@ function drawProceduralSprite(spriteObj, destX, destY, destW, clipY) {
         ctx.fillStyle = '#EEE'; ctx.fillRect(destX - signW / 2 + 15 * s, destY - poleH - signH + 15 * s, signW - 30 * s, signH - 30 * s);
     } else if (spriteObj.type === 'NPC_CAR') {
         let car = spriteObj.data; let carW = 140 * s; let carH = 70 * s;
-        const npcDrawY = destY - (car.crashY || 0) * s * 0.4;
+        const totalLift = (car.crashY || 0) + (car.airY || 0);
+        const npcDrawY = destY - totalLift * s * 0.4;
 
-        if (car.crashed && car.crashY > 0) {
-            ctx.fillStyle = 'rgba(0,0,0,0.25)';
+        if (totalLift > 0) {
+            const shadowScale = Math.max(0.15, 1 - totalLift * 0.001);
+            ctx.fillStyle = `rgba(0,0,0,${0.25 * shadowScale})`;
             ctx.beginPath();
-            ctx.ellipse(destX, destY, Math.max(5, carW * 0.4), 6 * s, 0, 0, Math.PI * 2);
+            ctx.ellipse(destX, destY, Math.max(5, carW * 0.4 * shadowScale), 6 * s * shadowScale, 0, 0, Math.PI * 2);
             ctx.fill();
         }
 
@@ -868,7 +891,7 @@ function drawRPMGauge(rpm) {
         if (i % 2000 === 0 || i === RPM_REDLINE) ctx.fillText(String(i / 1000) + 'k', cx + Math.cos(angle) * (r - 20), cy - Math.sin(angle) * (r - 20));
     }
     ctx.strokeStyle = 'rgba(255, 60, 60, 0.95)'; ctx.lineWidth = 5;
-    ctx.beginPath(); ctx.arc(cx, cy, r, Math.PI * (1 - 6000 / RPM_REDLINE), 0, false); ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx, cy, r, Math.PI * (1 - REDLINE_DROPOFF_START / RPM_REDLINE), 0, false); ctx.stroke();
     const needleAngle = Math.PI - (Math.min(rpm, RPM_REDLINE) / RPM_REDLINE) * Math.PI, len = r - 10;
     ctx.strokeStyle = '#1a1a1a'; ctx.lineWidth = 4; ctx.lineCap = 'round';
     ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(needleAngle) * len, cy - Math.sin(needleAngle) * len); ctx.stroke();
@@ -901,7 +924,7 @@ function drawSpeedGauge(speedKmh) {
     const speedClamped = Math.min(speedKmh, maxSpeed), needleAngle = Math.PI - (speedClamped / maxSpeed) * Math.PI, len = r - 10;
     ctx.strokeStyle = '#1a1a1a'; ctx.lineWidth = 4; ctx.lineCap = 'round';
     ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(needleAngle) * len, cy - Math.sin(needleAngle) * len); ctx.stroke();
-    ctx.strokeStyle = speedKmh > 280 ? '#FF4444' : '#FFF'; ctx.lineWidth = 2.5;
+    ctx.strokeStyle = speedKmh > maxSpeed * 0.92 ? '#FF4444' : '#FFF'; ctx.lineWidth = 2.5;
     ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(needleAngle) * len, cy - Math.sin(needleAngle) * len); ctx.stroke();
     ctx.fillStyle = '#333'; ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = '#555'; ctx.lineWidth = 1; ctx.stroke();
@@ -1076,30 +1099,30 @@ function render() {
     let x = 0, dx = 0, maxY = height;
     let spritesToDraw = [];
 
+    const _projTmp = { x: 0, y: 0, w: 0 };
+
     for (let n = 0; n < 300; n++) {
         let seg = segments[(startSegIndex + n) % segments.length];
-        seg.z = (startSegIndex + n) * segmentLength;
+        const segZ = (startSegIndex + n) * segmentLength;
 
-        project(seg.p1, x, seg.y, seg.z, camX, camY, camZ - (n === 0 ? offset : 0));
+        project(seg.p1, x, seg.y, segZ, camX, camY, camZ - (n === 0 ? offset : 0));
         let currentCurveX = x;
         x += dx; dx += seg.curve;
 
         for (let i = 0; i < seg.sprites.length; i++) {
-            let spriteP = { x: 0, y: 0, w: 0 };
-            project(spriteP, currentCurveX + seg.sprites[i].offset * roadWidth, seg.y, seg.z, camX, camY, camZ - (n === 0 ? offset : 0));
-            if (spriteP.x > -1000 && spriteP.x < width + 1000) {
-                spritesToDraw.push({ type: seg.sprites[i].type, data: seg.sprites[i].data, x: spriteP.x, y: spriteP.y, w: spriteP.w, clipY: maxY });
+            project(_projTmp, currentCurveX + seg.sprites[i].offset * roadWidth, seg.y, segZ, camX, camY, camZ - (n === 0 ? offset : 0));
+            if (_projTmp.x > -1000 && _projTmp.x < width + 1000) {
+                spritesToDraw.push({ type: seg.sprites[i].type, data: seg.sprites[i].data, x: _projTmp.x, y: _projTmp.y, w: _projTmp.w, clipY: maxY });
             }
         }
 
         for (let i = 0; i < seg.cars.length; i++) {
             let car = seg.cars[i];
-            let carP = { x: 0, y: 0, w: 0 };
-            let carVisualZ = seg.z + (car.z % segmentLength);
-            project(carP, currentCurveX + car.offset * roadWidth, seg.y, carVisualZ, camX, camY, camZ - (n === 0 ? offset : 0));
+            let carVisualZ = segZ + (car.z % segmentLength);
+            project(_projTmp, currentCurveX + car.offset * roadWidth, seg.y, carVisualZ, camX, camY, camZ - (n === 0 ? offset : 0));
 
-            if (carP.x > -1000 && carP.x < width + 1000) {
-                spritesToDraw.push({ type: 'NPC_CAR', data: car, x: carP.x, y: carP.y, w: carP.w, clipY: maxY });
+            if (_projTmp.x > -1000 && _projTmp.x < width + 1000) {
+                spritesToDraw.push({ type: 'NPC_CAR', data: car, x: _projTmp.x, y: _projTmp.y, w: _projTmp.w, clipY: maxY });
             }
         }
 
@@ -1126,8 +1149,9 @@ function render() {
 
     ctx.save();
     if (onShoulder && speed > 0 && jumpHeight === 0) {
-        const jitterX = (Math.random() - 0.5) * 6;
-        const jitterY = (Math.random() - 0.5) * 3;
+        const t = performance.now();
+        const jitterX = Math.sin(t * 0.047) * 3 + Math.sin(t * 0.113) * 2;
+        const jitterY = Math.sin(t * 0.073) * 1.5 + Math.sin(t * 0.157) * 1;
         ctx.translate(jitterX, jitterY);
     }
     if (isCrashed) {
@@ -1136,9 +1160,20 @@ function render() {
         ctx.translate(cx, cy - jumpHeight * 0.015);
         ctx.rotate(crashRot);
         ctx.translate(-cx, -(cy - jumpHeight * 0.015));
+    } else if (jumpHeight > 0) {
+        let pitchAngle = 0;
+        if (keys.ArrowUp) pitchAngle = -0.12;
+        else if (keys.ArrowDown) pitchAngle = 0.15;
+        if (pitchAngle !== 0) {
+            let cx = carX + carW / 2;
+            let cy = height - carH - 20 - jumpHeight * 0.015 + carH / 2;
+            ctx.translate(cx, cy);
+            ctx.rotate(pitchAngle);
+            ctx.translate(-cx, -cy);
+        }
     }
 
-    const bounce = (speed > 0 && jumpHeight === 0 && !isCrashed) ? Math.random() * 2 : 0;
+    const bounce = (speed > 0 && jumpHeight === 0 && !isCrashed) ? Math.sin(performance.now() * 0.012) * 1.2 + Math.sin(performance.now() * 0.029) * 0.6 : 0;
     const carY = height - carH - 20 + bounce - (jumpHeight * 0.015);
 
     if (jumpHeight > 0 && !isCrashed) {
@@ -1163,7 +1198,7 @@ function render() {
  * @param {{ startSegIndex: number, baseSeg: object, nextSeg: object, trackElevation: number }} trackState - Aktueller Streckenzustand von getTrackState().
  */
 function checkStaticObstacleCollision(trackState) {
-    const inAir = playerY > trackState.trackElevation + 80;
+    const inAir = playerY > trackState.trackElevation + IN_AIR_THRESHOLD;
     if (inAir) return;
     if (Date.now() - crashResetAt < CRASH_INVULN_MS) return;
 
@@ -1210,9 +1245,12 @@ function crashNPCCar(car, impactSpeed, lateralDir) {
     playCrashSound();
 }
 
+let _dirtyCarSegments = [];
+
 function updateNPCsAndCheckCollision(trackState, dt60) {
     const maxZ = segments.length * segmentLength;
-    for (let i = 0; i < segments.length; i++) segments[i].cars = [];
+    for (let i = 0; i < _dirtyCarSegments.length; i++) _dirtyCarSegments[i].cars = [];
+    _dirtyCarSegments = [];
 
     for (let i = 0; i < cars.length; i++) {
         const car = cars[i];
@@ -1236,14 +1274,20 @@ function updateNPCsAndCheckCollision(trackState, dt60) {
 
             if (car.z < 0) car.z += maxZ;
             if (car.z >= maxZ) car.z -= maxZ;
-            segments[Math.floor(car.z / segmentLength) % segments.length].cars.push(car);
+            const crashSeg = segments[Math.floor(car.z / segmentLength) % segments.length];
+            crashSeg.cars.push(car);
+            _dirtyCarSegments.push(crashSeg);
 
             if (car.crashTimer > NPC_RESPAWN_DELAY) {
                 car.crashed = false;
                 car.crashRot = 0;
                 car.crashY = 0;
+                car.airY = 0;
+                car.airVelY = 0;
                 car.speed = car.originalSpeed;
-                car.offset = 0.25 + Math.random() * 0.6;
+                car.offset = car.dir === -1
+                    ? -(0.25 + Math.random() * 0.4)
+                    : 0.25 + Math.random() * 0.6;
                 const playerZ = position % maxZ;
                 car.z = (playerZ + 4000 + Math.random() * 6000) % maxZ;
             }
@@ -1253,10 +1297,29 @@ function updateNPCsAndCheckCollision(trackState, dt60) {
         car.z += car.dir * car.speed * dt60;
         if (car.z < 0) car.z += maxZ;
         if (car.z >= maxZ) car.z -= maxZ;
-        segments[Math.floor(car.z / segmentLength) % segments.length].cars.push(car);
+
+        const carSegIdx = Math.floor(car.z / segmentLength) % segments.length;
+        const carSeg = segments[carSegIdx];
+
+        if (!car.airY && car.airVelY <= 0 && carSeg.rampTakeoff && car.speed > 20) {
+            const launchMul = Math.min(1, car.speed / 150);
+            car.airVelY = RAMP_LAUNCH_VELOCITY * NPC_RAMP_LAUNCH_FACTOR * (0.4 + 0.6 * launchMul);
+        }
+
+        if (car.airVelY > 0 || car.airY > 0) {
+            car.airVelY -= NPC_AIR_GRAVITY * dt60;
+            car.airY += car.airVelY * dt60;
+            if (car.airY <= 0) {
+                car.airY = 0;
+                car.airVelY = 0;
+            }
+        }
+
+        carSeg.cars.push(car);
+        _dirtyCarSegments.push(carSeg);
 
         const distToPlayerZ = Math.abs(car.z - (position % maxZ + COLLISION_Z_OFFSET));
-        if (distToPlayerZ >= COLLISION_Z_RANGE || playerY > trackState.trackElevation + 1500) continue;
+        if (distToPlayerZ >= COLLISION_Z_RANGE || playerY > trackState.trackElevation + IN_AIR_THRESHOLD) continue;
         if (Math.abs(playerX - car.offset) >= COLLISION_PLAYER_CAR_X) continue;
         if (Date.now() - crashResetAt < CRASH_INVULN_MS) continue;
 
@@ -1341,7 +1404,7 @@ function update(timestamp) {
     if (!isCrashed) updateNPCsAndCheckCollision(trackState, dt60);
 
     let { startSegIndex, offset, baseSeg, nextSeg, trackElevation } = trackState;
-    const inAir = playerY > trackElevation + 60;
+    const inAir = playerY > trackElevation + IN_AIR_THRESHOLD;
 
     // --- Handbremse (progressiv) ---
     if (keys.ShiftLeft) {
@@ -1422,9 +1485,16 @@ function update(timestamp) {
         playerVelY = RAMP_LAUNCH_VELOCITY * (0.5 + 0.5 * launchMul);
     }
 
-    // --- Vertikale Physik ---
-    const wasInAir = playerY > trackElevation + 60;
-    playerVelY -= GRAVITY_JUMP * dt60;
+    // --- Vertikale Physik mit Pitch-Kontrolle ---
+    const wasInAir = playerY > trackElevation + IN_AIR_THRESHOLD;
+
+    let gravMul = 1.0;
+    if (inAir) {
+        if (keys.ArrowUp) gravMul = PITCH_UP_GRAVITY_MUL;
+        else if (keys.ArrowDown) gravMul = PITCH_DOWN_GRAVITY_MUL;
+    }
+
+    playerVelY -= GRAVITY_JUMP * gravMul * dt60;
     playerY += playerVelY * dt60;
     if (playerY < trackElevation) {
         const impactVel = playerVelY;
@@ -1433,6 +1503,9 @@ function update(timestamp) {
             playerVelY = Math.min(180, -impactVel * LANDING_BOUNCE_FACTOR);
             const speedLoss = Math.abs(impactVel) * LANDING_SPEED_LOSS_FACTOR * speed;
             speed = Math.max(0, speed - speedLoss);
+        } else if (wasInAir && Math.abs(impactVel) < CLEAN_LANDING_MAX_VEL) {
+            speed = Math.min(maxSpeed, speed + CLEAN_LANDING_BOOST);
+            playerVelY = 0;
         } else {
             playerVelY = 0;
         }
