@@ -210,6 +210,16 @@ let currentLapTime = 0;
 let lastLapTime = 0;
 let lapStartTime = Date.now();
 
+// --- Race & opponents (first to 3 laps wins) ---
+const RACE_LAPS = 3;
+const NUM_OPPONENTS = 10;
+let raceOver = false;
+let raceWinner = null;
+let raceWinnerName = null;
+const playerSpeedSamples = [];
+const PLAYER_SPEED_SAMPLES_MAX = 90;
+let playerAvgSpeed = 110;
+
 let keys = { ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false, ShiftLeft: false };
 
 // --- Motorsound (Web Audio API, prozedural) ---
@@ -657,19 +667,23 @@ function buildRoad(trackData) {
     }
 
     const trackLength = segmentCount * segmentLength;
+    raceOver = false;
+    raceWinner = null;
+    raceWinnerName = null;
     cars = [];
-    for (let i = 0; i < 100; i++) {
-        const isOncoming = i >= 80;
-        const dir = isOncoming ? -1 : 1;
-        const offset = isOncoming
-            ? -(0.25 + Math.random() * 0.4)
-            : 0.25 + Math.random() * 0.6;
+    const opponentColors = ['#2266dd', '#dd6622', '#22aa44', '#aa22aa', '#ddcc22', '#22cccc', '#cc4422', '#6688dd', '#88dd66', '#dd88aa'];
+    const baseTargetSpeed = Math.min(maxSpeed * 0.92, 200);
+    for (let i = 0; i < NUM_OPPONENTS; i++) {
+        const speedFactor = 0.86 + (i / (NUM_OPPONENTS - 1 || 1)) * 0.18;
         cars.push({
-            z: Math.random() * trackLength,
-            offset: offset,
-            speed: isOncoming ? 60 + Math.random() * 80 : 40 + Math.random() * 60,
-            dir: dir,
-            color: `hsl(${Math.floor(Math.random() * 360)}, 80%, 50%)`,
+            z: i * 80,
+            offset: -0.4 + (i % 3) * 0.4,
+            speed: baseTargetSpeed * speedFactor,
+            dir: 1,
+            lap: 0,
+            name: String(i + 1),
+            color: opponentColors[i % opponentColors.length],
+            targetSpeedFactor: speedFactor,
             crashed: false,
             crashRot: 0,
             crashSpin: 0,
@@ -678,7 +692,7 @@ function buildRoad(trackData) {
             crashY: 0,
             crashVelY: 0,
             crashTimer: 0,
-            originalSpeed: 0,
+            originalSpeed: baseTargetSpeed * speedFactor,
             airY: 0,
             airVelY: 0
         });
@@ -1200,17 +1214,52 @@ function drawTrackMap() {
  */
 function drawHUD(displayRpm) {
     const rpm = displayRpm != null ? displayRpm : computeRpm(speed, currentGear);
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.6)'; ctx.fillRect(15, 15, 200, 90);
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.6)'; ctx.fillRect(15, 15, 200, 112);
     drawRPMGauge(rpm);
     drawSpeedGauge(speed);
 
-    // Lap, Zeit
+    // Lap, Position, Zeit, Rennen
+    let playerPosition = 1;
+    if (segments.length && cars.length) {
+        const trackLen = segments.length * segmentLength;
+        const playerZ = position % trackLen;
+        const entries = [{ lap: currentLap - 1, z: playerZ, isPlayer: true }];
+        for (let i = 0; i < cars.length; i++) {
+            entries.push({ lap: cars[i].lap, z: cars[i].z, isPlayer: false });
+        }
+        entries.sort((a, b) => { if (a.lap !== b.lap) return b.lap - a.lap; return b.z - a.z; });
+        const idx = entries.findIndex(e => e.isPlayer);
+        if (idx >= 0) playerPosition = idx + 1;
+    }
+    const totalRacers = 1 + (cars.length || 0);
     ctx.fillStyle = '#FFF'; ctx.font = 'bold 20px "Courier New"'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
-    ctx.fillText(`LAP:  ${currentLap}`, 25, 40); ctx.fillText(`TIME: ${currentLapTime.toFixed(2)}s`, 25, 65);
-    if (lastLapTime > 0) { ctx.fillStyle = '#AAA'; ctx.fillText(`LAST: ${lastLapTime.toFixed(2)}s`, 25, 90); }
+    ctx.fillText(`LAP:  ${currentLap}/${RACE_LAPS}`, 25, 40);
+    ctx.fillText(`POS:  ${playerPosition}/${totalRacers}`, 25, 58);
+    ctx.fillText(`TIME: ${currentLapTime.toFixed(2)}s`, 25, 78);
+    if (lastLapTime > 0) { ctx.fillStyle = '#AAA'; ctx.fillText(`LAST: ${lastLapTime.toFixed(2)}s`, 25, 103); }
+    ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.font = 'bold 12px "Courier New"'; ctx.fillText('First to 3 laps wins', 25, 121);
 
     drawTrackOverview();
     drawTrackMap();
+
+    if (raceOver) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+        ctx.fillRect(0, 0, width, height);
+        ctx.fillStyle = '#FFF';
+        ctx.textAlign = 'center';
+        ctx.font = 'bold 48px "Courier New"';
+        if (raceWinner === 'player') {
+            ctx.fillStyle = '#4a4';
+            ctx.fillText('YOU WIN!', width / 2, height / 2 - 20);
+            ctx.fillStyle = '#FFF'; ctx.font = 'bold 24px "Courier New"';
+            ctx.fillText('First to 3 laps', width / 2, height / 2 + 30);
+        } else {
+            ctx.fillStyle = '#c44';
+            ctx.fillText(`OPPONENT ${raceWinnerName} WINS!`, width / 2, height / 2 - 20);
+            ctx.fillStyle = '#FFF'; ctx.font = 'bold 24px "Courier New"';
+            ctx.fillText('First to 3 laps', width / 2, height / 2 + 30);
+        }
+    }
 
     if (isCrashed) {
         ctx.fillStyle = 'rgba(255, 0, 0, 0.7)';
@@ -1441,19 +1490,23 @@ function updateNPCsAndCheckCollision(trackState, dt60) {
                 car.crashY = 0;
                 car.airY = 0;
                 car.airVelY = 0;
-                car.speed = car.originalSpeed;
-                car.offset = car.dir === -1
-                    ? -(0.25 + Math.random() * 0.4)
-                    : 0.25 + Math.random() * 0.6;
-                const playerZ = position % maxZ;
-                car.z = (playerZ + 4000 + Math.random() * 6000) % maxZ;
+                car.speed = Math.min(maxSpeed * 0.95, playerAvgSpeed * car.targetSpeedFactor);
+                car.originalSpeed = car.speed;
+                car.offset = Math.max(-1.2, Math.min(1.2, car.offset));
             }
             continue;
         }
 
-        car.z += car.dir * car.speed * dt60;
+        const targetSpeed = Math.max(60, Math.min(maxSpeed * 0.96, playerAvgSpeed * car.targetSpeedFactor));
+        car.speed += (targetSpeed - car.speed) * 0.02 * dt60;
+        car.speed = Math.max(40, Math.min(maxSpeed * 0.98, car.speed));
+
+        car.z += car.speed * dt60;
+        if (car.z >= maxZ) {
+            car.lap++;
+            car.z = car.z % maxZ;
+        }
         if (car.z < 0) car.z += maxZ;
-        if (car.z >= maxZ) car.z -= maxZ;
 
         const carSegIdx = Math.floor(car.z / segmentLength) % segments.length;
         const carSeg = segments[carSegIdx];
@@ -1475,33 +1528,37 @@ function updateNPCsAndCheckCollision(trackState, dt60) {
         carSeg.cars.push(car);
         _dirtyCarSegments.push(carSeg);
 
-        const distToPlayerZ = Math.abs(car.z - (position % maxZ + COLLISION_Z_OFFSET));
+        if (car.lap !== currentLap - 1) continue;
+        const playerZ = position % maxZ;
+        const distToPlayerZ = Math.abs(car.z - playerZ);
         const playerInAir = playerY > trackState.trackElevation + IN_AIR_THRESHOLD || playerVelY > 25;
         if (distToPlayerZ >= COLLISION_Z_RANGE || playerInAir) continue;
         if (Math.abs(playerX - car.offset) >= COLLISION_PLAYER_CAR_X) continue;
         if (Date.now() - crashResetAt < CRASH_INVULN_MS) continue;
 
         const lateralDir = playerX >= car.offset ? 1 : -1;
-
-        if (car.dir === -1) {
-            const impactSpeed = speed + car.speed;
+        const impactSpeed = Math.max(0, speed - car.speed);
+        if (impactSpeed > CRASH_SPEED_THRESHOLD) {
             crashNPCCar(car, impactSpeed, lateralDir);
-            isCrashed = true;
-            playerVelY = 300 + (speed * 4);
-            crashSpinSpeed = 0.05 + (speed / maxSpeed) * 0.4;
+            speed = Math.max(0, speed * 0.4);
+            if (impactSpeed > 120) {
+                isCrashed = true;
+                playerVelY = impactSpeed * 2;
+                crashSpinSpeed = 0.05 + (impactSpeed / maxSpeed) * 0.3;
+            }
         } else {
-            const impactSpeed = Math.max(0, speed - car.speed);
-            if (impactSpeed > CRASH_SPEED_THRESHOLD) {
-                crashNPCCar(car, impactSpeed, lateralDir);
-                speed = Math.max(0, speed * 0.4);
-                if (impactSpeed > 120) {
-                    isCrashed = true;
-                    playerVelY = impactSpeed * 2;
-                    crashSpinSpeed = 0.05 + (impactSpeed / maxSpeed) * 0.3;
-                }
-            } else {
-                speed = Math.min(speed, car.speed);
-                playerX += lateralDir * 0.08;
+            speed = Math.min(speed, car.speed);
+            playerX += lateralDir * 0.08;
+        }
+    }
+
+    if (!raceOver) {
+        for (let i = 0; i < cars.length; i++) {
+            if (cars[i].lap >= RACE_LAPS) {
+                raceOver = true;
+                raceWinner = 'opponent';
+                raceWinnerName = cars[i].name;
+                break;
             }
         }
     }
@@ -1518,6 +1575,13 @@ function update(timestamp) {
     const dtRaw = Math.min(((timestamp || performance.now()) - lastTimestamp) / 1000, 0.05);
     lastTimestamp = timestamp || performance.now();
     const dt60 = dtRaw * TARGET_FPS;
+
+    if (raceOver) {
+        updateEngineSound(computeRpm(speed, currentGear), keys.ArrowUp ? 1 : 0);
+        render();
+        requestAnimationFrame(update);
+        return;
+    }
 
     if (isCrashed) {
         crashRot += crashSpinSpeed * dt60;
@@ -1554,8 +1618,20 @@ function update(timestamp) {
         currentLap++;
         lapStartTime = Date.now();
         position = position % trackLength;
+        if (currentLap >= RACE_LAPS && !raceOver) {
+            raceOver = true;
+            raceWinner = 'player';
+        }
     }
     currentLapTime = (Date.now() - lapStartTime) / 1000;
+
+    playerSpeedSamples.push(speed);
+    if (playerSpeedSamples.length > PLAYER_SPEED_SAMPLES_MAX) playerSpeedSamples.shift();
+    if (playerSpeedSamples.length >= 30) {
+        let sum = 0;
+        for (let i = 0; i < playerSpeedSamples.length; i++) sum += playerSpeedSamples[i];
+        playerAvgSpeed = sum / playerSpeedSamples.length;
+    }
 
     let trackState = getTrackState(position);
     checkStaticObstacleCollision(trackState);
