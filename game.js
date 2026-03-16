@@ -79,9 +79,11 @@ const CRASH_RESET_GROUND_OFFSET = 100;
 /** Nach Crash-Reset: so viele ms lang keine erneute Crash-Auslösung (verhindert Crash-Loop mit NPCs) */
 const CRASH_INVULN_MS = 1800;
 const CRASH_SPEED_THRESHOLD = 50;
-const COLLISION_Z_RANGE = 250;
+/** Z-range for NPC collision (smaller = only when really close along the road). */
+const COLLISION_Z_RANGE = 140;
 const COLLISION_Z_OFFSET = 300;
-const COLLISION_PLAYER_CAR_X = 0.3;
+/** Lateral overlap needed to count as hit (smaller = must be closer side-by-side to collide). */
+const COLLISION_PLAYER_CAR_X = 0.18;
 /** Z-Reichweite für Kollision mit statischen Sprites (Bäume, Gebäude, …) */
 const COLLISION_STATIC_Z_RANGE = 280;
 
