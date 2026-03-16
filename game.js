@@ -703,6 +703,28 @@ function project(p, worldX, worldY, worldZ, camX, camY, camZ) {
 }
 
 /**
+ * Projects a world point into 2D for the rear-view mirror (camera looks backward).
+ * z = camZ - worldZ so segments behind the player have positive z.
+ * Output coordinates are in mirror viewport space (centerX, centerY, viewW, viewH).
+ */
+function projectRear(p, worldX, worldY, worldZ, camX, camY, camZ, centerX, centerY, viewW, viewH) {
+    let z = Math.max(1, camZ - worldZ);
+    let scale = cameraDepth / z;
+    p.x = Math.round(centerX + (scale * (worldX - camX) * viewW / 2));
+    p.y = Math.round(centerY - (scale * (worldY - camY) * viewH / 2));
+    p.w = Math.max(1, Math.round(scale * roadWidth * viewW / 2));
+}
+
+/** Like projectRear but takes distance-behind directly (for wrapped track). */
+function projectRearByDistance(p, worldX, worldY, zBehind, camX, camY, centerX, centerY, viewW, viewH) {
+    let z = Math.max(1, zBehind);
+    let scale = cameraDepth / z;
+    p.x = Math.round(centerX + (scale * (worldX - camX) * viewW / 2));
+    p.y = Math.round(centerY - (scale * (worldY - camY) * viewH / 2));
+    p.w = Math.max(1, Math.round(scale * roadWidth * viewW / 2));
+}
+
+/**
  * Zeichnet ein Trapez (Quad) als Strasse/Rand-Band zwischen zwei projizierten Querschnitten.
  * @param {string} color - Fuellfarbe (z.B. aus COLORS.road, COLORS.rumble).
  * @param {number} x1 - Linke/rechte Bildschirm-X des vorderen Querschnitts.
@@ -717,6 +739,119 @@ function drawQuad(color, x1, y1, w1, x2, y2, w2) {
     ctx.moveTo(x1 - w1, y1); ctx.lineTo(x2 - w2, y2);
     ctx.lineTo(x2 + w2, y2); ctx.lineTo(x1 + w1, y1);
     ctx.fill();
+}
+
+/** Rear-view mirror: size and position (top-center, so it doesn't overlap Lap/Time on the left). */
+const MIRROR_W = 200;
+const MIRROR_H = 95;
+const MIRROR_Y = 12;
+const MIRROR_SEGMENTS = 100;
+
+/**
+ * Draws the rear-view mirror: road behind the player (perspective looking backward).
+ */
+function drawRearViewMirror(startSegIndex, camX, camY, camZ) {
+    if (!segments.length) return;
+    const mirrorX = Math.floor(width / 2 - MIRROR_W / 2);
+    const L = segments.length;
+    const centerX = mirrorX + MIRROR_W / 2;
+    const centerY = MIRROR_Y + MIRROR_H / 2;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(mirrorX, MIRROR_Y, MIRROR_W, MIRROR_H);
+    ctx.clip();
+
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+    ctx.fillRect(mirrorX, MIRROR_Y, MIRROR_W, MIRROR_H);
+
+    const _pNear = { x: 0, y: 0, w: 0 };
+    const _pFar = { x: 0, y: 0, w: 0 };
+    let xBack = 0;
+    let maxY = MIRROR_Y + MIRROR_H;
+
+    for (let n = 1; n <= MIRROR_SEGMENTS; n++) {
+        const s = (startSegIndex - n + L * 100) % L;
+        const sNext = (s + 1) % L;
+        const seg = segments[s];
+        const nextSeg = segments[sNext];
+        const nearZ = (s + 1) * segmentLength;
+        const farZ = s * segmentLength;
+
+        xBack -= seg.curve;
+        const xNear = xBack + seg.curve;
+        const xFar = xBack;
+
+        projectRear(_pNear, xNear, nextSeg.y, nearZ, camX, camY, camZ, centerX, centerY, MIRROR_W, MIRROR_H);
+        projectRear(_pFar, xFar, seg.y, farZ, camX, camY, camZ, centerX, centerY, MIRROR_W, MIRROR_H);
+
+        if (_pNear.y >= maxY && _pFar.y >= maxY) continue;
+
+        ctx.fillStyle = seg.color.grass;
+        const topY = Math.min(_pNear.y, _pFar.y);
+        if (maxY > topY) ctx.fillRect(mirrorX, topY, MIRROR_W, maxY - topY);
+        maxY = topY;
+
+        drawQuad(seg.color.rumble, _pNear.x, _pNear.y, _pNear.w * 1.1, _pFar.x, _pFar.y, _pFar.w * 1.1);
+        drawQuad(seg.color.road, _pNear.x, _pNear.y, _pNear.w, _pFar.x, _pFar.y, _pFar.w);
+    }
+
+    const trackLength = L * segmentLength;
+    const mirrorClipY = MIRROR_Y + MIRROR_H;
+    const _pSprite = { x: 0, y: 0, w: 0 };
+    const mirrorSprites = [];
+    let xBackAcc = 0;
+    const xFarByN = [];
+    const xNearByN = [];
+    for (let n = 1; n <= MIRROR_SEGMENTS; n++) {
+        const s = (startSegIndex - n + L * 100) % L;
+        const seg = segments[s];
+        xBackAcc -= seg.curve;
+        xFarByN[n] = xBackAcc;
+        xNearByN[n] = xBackAcc + seg.curve;
+    }
+
+    for (let n = 1; n <= MIRROR_SEGMENTS; n++) {
+        const s = (startSegIndex - n + L * 100) % L;
+        const seg = segments[s];
+        const farZ = s * segmentLength;
+        const xNear = xNearByN[n];
+        const xFar = xFarByN[n];
+
+        for (let i = 0; i < seg.sprites.length; i++) {
+            const sprite = seg.sprites[i];
+            const worldX = xFar + sprite.offset * roadWidth;
+            projectRear(_pSprite, worldX, seg.y, farZ, camX, camY, camZ, centerX, centerY, MIRROR_W, MIRROR_H);
+            if (_pSprite.x >= mirrorX - 50 && _pSprite.x <= mirrorX + MIRROR_W + 50 && _pSprite.y >= MIRROR_Y - 20 && _pSprite.y <= mirrorClipY + 20) {
+                mirrorSprites.push({ type: sprite.type, data: sprite.data, x: _pSprite.x, y: _pSprite.y, w: _pSprite.w });
+            }
+        }
+
+        for (let i = 0; i < seg.cars.length; i++) {
+            const car = seg.cars[i];
+            const zBehind = (camZ - car.z + trackLength) % trackLength;
+            if (zBehind <= 0 || zBehind > MIRROR_SEGMENTS * segmentLength) continue;
+            const t = (car.z - s * segmentLength) / segmentLength;
+            const roadX = xFar + t * (xNear - xFar) + car.offset * roadWidth;
+            const segY = seg.y;
+            projectRearByDistance(_pSprite, roadX, segY, zBehind, camX, camY, centerX, centerY, MIRROR_W, MIRROR_H);
+            if (_pSprite.x >= mirrorX - 50 && _pSprite.x <= mirrorX + MIRROR_W + 50 && _pSprite.y >= MIRROR_Y - 20 && _pSprite.y <= mirrorClipY + 20) {
+                mirrorSprites.push({ type: 'NPC_CAR', data: car, x: _pSprite.x, y: _pSprite.y, w: _pSprite.w });
+            }
+        }
+    }
+
+    mirrorSprites.sort((a, b) => b.y - a.y);
+    for (let i = 0; i < mirrorSprites.length; i++) {
+        const o = mirrorSprites[i];
+        drawProceduralSprite({ type: o.type, data: o.data }, o.x, o.y, o.w, mirrorClipY);
+    }
+
+    ctx.restore();
+
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(mirrorX, MIRROR_Y, MIRROR_W, MIRROR_H);
 }
 
 /**
@@ -1143,6 +1278,8 @@ function render() {
     for (let i = spritesToDraw.length - 1; i >= 0; i--) {
         drawProceduralSprite(spritesToDraw[i], spritesToDraw[i].x, spritesToDraw[i].y, spritesToDraw[i].w, spritesToDraw[i].clipY);
     }
+
+    drawRearViewMirror(startSegIndex, camX, camY, camZ);
 
     const carW = 130; const carH = 55;
     let carX = width / 2 - carW / 2;
