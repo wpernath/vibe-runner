@@ -56,7 +56,8 @@ let crashSpinSpeed = 0;
 /** Zeitstempel des letzten Crash-Resets (für Invulnerabilität) */
 let crashResetAt = Date.now();
 
-const IN_AIR_THRESHOLD = 60;
+/** Height above track (world Y) above which we count as in-air (no NPC/static collision). */
+const IN_AIR_THRESHOLD = 100;
 
 const maxSpeed = 250;
 const segmentLength = 200;
@@ -66,8 +67,8 @@ const roadWidth = 3000;
 
 // Rampen (Sprungschanzen): sehr langer Anstieg, damit sie in der Perspektive wie Rampen wirken
 const RAMP_LAUNCH_VELOCITY = 520;
-/** Schwerkraft pro Frame beim Sprung (kleiner = längerer Flug). */
-const GRAVITY_JUMP = 82;
+/** Gravity per frame when airborne (smaller = longer hang time, arcade feel). */
+const GRAVITY_JUMP = 70;
 /** Beim Landen: Aufprall ab dieser Fallgeschwindigkeit löst einen kleinen Bounce aus. */
 const LANDING_BOUNCE_THRESHOLD = 100;
 /** Bounce-Faktor (0–1): Anteil der Aufprallgeschwindigkeit, der zurückfedert. */
@@ -102,6 +103,9 @@ const STEERING_RETURN_RATE = 0.08;
 // Kurvenfliehkraft (quadratisch: v², gefährlicher bei Highspeed, milder bei Lowspeed)
 const CURVE_FORCE_DIVISOR = 3_600_000;
 const CURVE_FORCE_SPEED_THRESHOLD = 60;
+/** Max roll angle (rad) for centrifugal lean; scale from curve*speed² to angle. */
+const CURVE_ROLL_MAX = 0.22;
+const CURVE_ROLL_SCALE = 8;
 
 // Handbremse (progressiv: baut sich über ~0.25s auf, löst sich über ~0.17s)
 const HANDBRAKE_STEERING_MUL = 0.26;
@@ -133,9 +137,9 @@ const AIR_BRAKE_MUL = 0.0;
 // Geschwindigkeitsverlust bei harter Landung (proportional zu Aufprallgeschwindigkeit)
 const LANDING_SPEED_LOSS_FACTOR = 0.0004;
 
-// Pitch-Kontrolle in der Luft (Pfeiltasten hoch/runter steuern Neigung)
-const PITCH_UP_GRAVITY_MUL = 0.45;
-const PITCH_DOWN_GRAVITY_MUL = 2.2;
+// Pitch in air (up/down keys): mild effect so jump arc stays predictable and arcade-like
+const PITCH_UP_GRAVITY_MUL = 0.75;
+const PITCH_DOWN_GRAVITY_MUL = 1.35;
 
 // Clean-Landing Bonus
 const CLEAN_LANDING_MAX_VEL = 80;
@@ -1154,6 +1158,20 @@ function render() {
         const jitterY = Math.sin(t * 0.073) * 1.5 + Math.sin(t * 0.157) * 1;
         ctx.translate(jitterX, jitterY);
     }
+    // Centrifugal lean: tighter/faster curve = stronger roll (only on ground)
+    if (!isCrashed && jumpHeight === 0 && speed > 0) {
+        let curveForceVisual = (baseSeg.curve * speed * speed) / CURVE_FORCE_DIVISOR;
+        if (speed < CURVE_FORCE_SPEED_THRESHOLD) curveForceVisual *= speed / CURVE_FORCE_SPEED_THRESHOLD;
+        curveForceVisual *= (1 + handbrakeAmount * (HANDBRAKE_CURVE_MUL - 1));
+        const rollAngle = Math.max(-CURVE_ROLL_MAX, Math.min(CURVE_ROLL_MAX, curveForceVisual * CURVE_ROLL_SCALE));
+        if (Math.abs(rollAngle) > 0.008) {
+            const cx = carX + carW / 2;
+            const cy = height - carH - 20 + (speed > 0 && !isCrashed ? Math.sin(performance.now() * 0.012) * 1.2 + Math.sin(performance.now() * 0.029) * 0.6 : 0) - (jumpHeight * 0.015) + carH / 2;
+            ctx.translate(cx, cy);
+            ctx.rotate(rollAngle);
+            ctx.translate(-cx, -cy);
+        }
+    }
     if (isCrashed) {
         let cx = carX + carW / 2;
         let cy = (height - carH - 20) + carH / 2;
@@ -1198,7 +1216,7 @@ function render() {
  * @param {{ startSegIndex: number, baseSeg: object, nextSeg: object, trackElevation: number }} trackState - Aktueller Streckenzustand von getTrackState().
  */
 function checkStaticObstacleCollision(trackState) {
-    const inAir = playerY > trackState.trackElevation + IN_AIR_THRESHOLD;
+    const inAir = playerY > trackState.trackElevation + IN_AIR_THRESHOLD || playerVelY > 25;
     if (inAir) return;
     if (Date.now() - crashResetAt < CRASH_INVULN_MS) return;
 
@@ -1319,7 +1337,8 @@ function updateNPCsAndCheckCollision(trackState, dt60) {
         _dirtyCarSegments.push(carSeg);
 
         const distToPlayerZ = Math.abs(car.z - (position % maxZ + COLLISION_Z_OFFSET));
-        if (distToPlayerZ >= COLLISION_Z_RANGE || playerY > trackState.trackElevation + IN_AIR_THRESHOLD) continue;
+        const playerInAir = playerY > trackState.trackElevation + IN_AIR_THRESHOLD || playerVelY > 25;
+        if (distToPlayerZ >= COLLISION_Z_RANGE || playerInAir) continue;
         if (Math.abs(playerX - car.offset) >= COLLISION_PLAYER_CAR_X) continue;
         if (Date.now() - crashResetAt < CRASH_INVULN_MS) continue;
 
@@ -1485,7 +1504,7 @@ function update(timestamp) {
         playerVelY = RAMP_LAUNCH_VELOCITY * (0.5 + 0.5 * launchMul);
     }
 
-    // --- Vertikale Physik mit Pitch-Kontrolle ---
+    // --- Vertical physics: gravity in air always (even at speed 0), mild pitch for arcade arc ---
     const wasInAir = playerY > trackElevation + IN_AIR_THRESHOLD;
 
     let gravMul = 1.0;
