@@ -150,6 +150,10 @@ const CLEAN_LANDING_BOOST = 10;
 // NPC-Sprungphysik
 const NPC_RAMP_LAUNCH_FACTOR = 0.65;
 const NPC_AIR_GRAVITY = 65;
+/** Gegner bleiben auf der Fahrbahn (nicht auf Grünstreifen/ durch Häuser). */
+const NPC_ROAD_OFFSET_MAX = 0.95;
+/** Wie stark Gegner zur Straßenmitte gelenkt werden. */
+const NPC_CENTERING_RATE = 0.04;
 
 // Hangabtriebskraft: Schwerkraft entlang der Steigung (positiv = bergauf bremst, negativ = bergab beschleunigt)
 const SLOPE_GRAVITY_FACTOR = 0.55;
@@ -1495,7 +1499,7 @@ function updateNPCsAndCheckCollision(trackState, dt60) {
                 car.airVelY = 0;
                 car.speed = Math.min(maxSpeed * 0.95, playerAvgSpeed * car.targetSpeedFactor);
                 car.originalSpeed = car.speed;
-                car.offset = Math.max(-1.2, Math.min(1.2, car.offset));
+                car.offset = Math.max(-NPC_ROAD_OFFSET_MAX, Math.min(NPC_ROAD_OFFSET_MAX, car.offset));
             }
             continue;
         }
@@ -1531,7 +1535,8 @@ function updateNPCsAndCheckCollision(trackState, dt60) {
         let npcCurveForce = (carSeg.curve * car.speed * car.speed) / CURVE_FORCE_DIVISOR;
         if (car.speed < CURVE_FORCE_SPEED_THRESHOLD) npcCurveForce *= car.speed / CURVE_FORCE_SPEED_THRESHOLD;
         car.offset -= npcCurveForce * dt60;
-        car.offset = Math.max(-2.5, Math.min(2.5, car.offset));
+        car.offset += (0 - car.offset) * NPC_CENTERING_RATE * dt60;
+        car.offset = Math.max(-NPC_ROAD_OFFSET_MAX, Math.min(NPC_ROAD_OFFSET_MAX, car.offset));
 
         car.z += car.speed * dt60;
         if (car.z >= maxZ) {
