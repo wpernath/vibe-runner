@@ -216,6 +216,7 @@ const NUM_OPPONENTS = 10;
 let raceOver = false;
 let raceWinner = null;
 let raceWinnerName = null;
+let raceStartTime = 0;
 const playerSpeedSamples = [];
 const PLAYER_SPEED_SAMPLES_MAX = 90;
 let playerAvgSpeed = 110;
@@ -670,20 +671,22 @@ function buildRoad(trackData) {
     raceOver = false;
     raceWinner = null;
     raceWinnerName = null;
+    raceStartTime = Date.now();
     cars = [];
     const opponentColors = ['#2266dd', '#dd6622', '#22aa44', '#aa22aa', '#ddcc22', '#22cccc', '#cc4422', '#6688dd', '#88dd66', '#dd88aa'];
     const baseTargetSpeed = Math.min(maxSpeed * 0.92, 200);
     for (let i = 0; i < NUM_OPPONENTS; i++) {
         const speedFactor = 0.86 + (i / (NUM_OPPONENTS - 1 || 1)) * 0.18;
         cars.push({
-            z: i * 80,
-            offset: -0.4 + (i % 3) * 0.4,
-            speed: baseTargetSpeed * speedFactor,
+            z: i * 280,
+            offset: -0.5 + (i % 5) * 0.25,
+            speed: 0,
             dir: 1,
             lap: 0,
             name: String(i + 1),
             color: opponentColors[i % opponentColors.length],
             targetSpeedFactor: speedFactor,
+            startDelay: i * 0.45,
             crashed: false,
             crashRot: 0,
             crashSpin: 0,
@@ -1497,9 +1500,38 @@ function updateNPCsAndCheckCollision(trackState, dt60) {
             continue;
         }
 
+        let carSegIdx = Math.floor(car.z / segmentLength) % segments.length;
+        let carSeg = segments[carSegIdx];
+        const elapsed = (Date.now() - raceStartTime) / 1000;
+        if (elapsed < car.startDelay) {
+            carSeg.cars.push(car);
+            _dirtyCarSegments.push(carSeg);
+            continue;
+        }
         const targetSpeed = Math.max(60, Math.min(maxSpeed * 0.96, playerAvgSpeed * car.targetSpeedFactor));
+        if (car.speed < 20) car.speed = Math.min(car.speed + 8 * dt60, targetSpeed * 0.3);
         car.speed += (targetSpeed - car.speed) * 0.02 * dt60;
         car.speed = Math.max(40, Math.min(maxSpeed * 0.98, car.speed));
+
+        car.speed = Math.max(0, car.speed - AERO_DRAG * car.speed * car.speed * dt60);
+
+        const nextSeg = segments[(carSegIdx + 1) % segments.length];
+        const slope = (nextSeg.y - carSeg.y) / segmentLength;
+        car.speed = Math.max(0, car.speed + (-slope * SLOPE_GRAVITY_FACTOR) * dt60);
+
+        const npcShoulderDepth = Math.max(0, Math.abs(car.offset) - ROAD_EDGE);
+        const npcShoulderFactor = Math.min(1, npcShoulderDepth * SHOULDER_GRIP_FALLOFF);
+        if (npcShoulderFactor > 0 && car.speed > 0) {
+            const npcShoulderMax = Math.max(10, SHOULDER_MAX_SPEED * (1 - npcShoulderFactor * 0.5));
+            if (car.speed > npcShoulderMax) {
+                car.speed = Math.max(npcShoulderMax, car.speed - (3 + npcShoulderFactor * 4) * dt60);
+            }
+        }
+
+        let npcCurveForce = (carSeg.curve * car.speed * car.speed) / CURVE_FORCE_DIVISOR;
+        if (car.speed < CURVE_FORCE_SPEED_THRESHOLD) npcCurveForce *= car.speed / CURVE_FORCE_SPEED_THRESHOLD;
+        car.offset -= npcCurveForce * dt60;
+        car.offset = Math.max(-2.5, Math.min(2.5, car.offset));
 
         car.z += car.speed * dt60;
         if (car.z >= maxZ) {
@@ -1508,8 +1540,8 @@ function updateNPCsAndCheckCollision(trackState, dt60) {
         }
         if (car.z < 0) car.z += maxZ;
 
-        const carSegIdx = Math.floor(car.z / segmentLength) % segments.length;
-        const carSeg = segments[carSegIdx];
+        carSegIdx = Math.floor(car.z / segmentLength) % segments.length;
+        carSeg = segments[carSegIdx];
 
         if (!car.airY && car.airVelY <= 0 && carSeg.rampTakeoff && car.speed > 20) {
             const launchMul = Math.min(1, car.speed / 150);
@@ -1517,7 +1549,7 @@ function updateNPCsAndCheckCollision(trackState, dt60) {
         }
 
         if (car.airVelY > 0 || car.airY > 0) {
-            car.airVelY -= NPC_AIR_GRAVITY * dt60;
+            car.airVelY -= GRAVITY_JUMP * dt60;
             car.airY += car.airVelY * dt60;
             if (car.airY <= 0) {
                 car.airY = 0;
