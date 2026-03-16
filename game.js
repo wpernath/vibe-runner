@@ -54,7 +54,10 @@ let isCrashed = false;
 let crashRot = 0;
 let crashSpinSpeed = 0;
 /** Zeitstempel des letzten Crash-Resets (für Invulnerabilität) */
-let crashResetAt = 0;
+let crashResetAt = Date.now();
+
+/** Height above track (world Y) above which we count as in-air (no NPC/static collision). */
+const IN_AIR_THRESHOLD = 100;
 
 const maxSpeed = 250;
 const segmentLength = 200;
@@ -64,50 +67,92 @@ const roadWidth = 3000;
 
 // Rampen (Sprungschanzen): sehr langer Anstieg, damit sie in der Perspektive wie Rampen wirken
 const RAMP_LAUNCH_VELOCITY = 520;
-/** Schwerkraft pro Frame beim Sprung (kleiner = längerer Flug). */
-const GRAVITY_JUMP = 82;
+/** Gravity per frame when airborne (smaller = longer hang time, arcade feel). */
+const GRAVITY_JUMP = 70;
 /** Beim Landen: Aufprall ab dieser Fallgeschwindigkeit löst einen kleinen Bounce aus. */
 const LANDING_BOUNCE_THRESHOLD = 100;
 /** Bounce-Faktor (0–1): Anteil der Aufprallgeschwindigkeit, der zurückfedert. */
 const LANDING_BOUNCE_FACTOR = 0.38;
-/** Standard-Rampen (wird überschrieben, wenn Strecke aus data/ geladen wird). */
-let RAMPS = [
-    { start: 610, approachLen: 35, riseLen: 100, peakLen: 4, dropLen: 6, peakHeight: 2200, straightAfter: 90, landingFlat: 15 },
-    { start: 1000, approachLen: 35, riseLen: 100, peakLen: 4, dropLen: 6, peakHeight: 2200, straightAfter: 90, landingFlat: 15 },
-    { start: 1580, approachLen: 35, riseLen: 100, peakLen: 4, dropLen: 6, peakHeight: 2200, straightAfter: 90, landingFlat: 15 }
-];
 
 // Kollision & Crash-Konstanten
 const CRASH_RESET_GROUND_OFFSET = 100;
 /** Nach Crash-Reset: so viele ms lang keine erneute Crash-Auslösung (verhindert Crash-Loop mit NPCs) */
 const CRASH_INVULN_MS = 1800;
 const CRASH_SPEED_THRESHOLD = 50;
-const COLLISION_Z_RANGE = 250;
+/** Z-range for NPC collision (smaller = only when really close along the road). */
+const COLLISION_Z_RANGE = 140;
 const COLLISION_Z_OFFSET = 300;
-const COLLISION_PLAYER_CAR_X = 0.3;
+/** Lateral overlap needed to count as hit (smaller = must be closer side-by-side to collide). */
+const COLLISION_PLAYER_CAR_X = 0.18;
 /** Z-Reichweite für Kollision mit statischen Sprites (Bäume, Gebäude, …) */
 const COLLISION_STATIC_Z_RANGE = 280;
 
-// Seitenstreifen (ab |playerX| > ROAD_EDGE)
+// --- Physik-Tuning (alle Werte pro Frame bei 60 fps, dt-skaliert) ---
+const TARGET_FPS = 60;
+
+// Seitenstreifen (progressiv: Grip fällt ab, je weiter man neben der Straße ist)
 const ROAD_EDGE = 1.1;
 const SHOULDER_MAX_SPEED = 80;
 const SHOULDER_ACCEL = 0.2;
+const SHOULDER_GRIP_FALLOFF = 1.5;
 
-// Lenkung & Kurven
-const CURVE_FORCE_DIVISOR = 24000;
+// Lenkung mit Trägheit (steeringVel interpoliert zum Ziel statt direkter playerX-Änderung)
 const STEERING_FACTOR = 0.032;
-// Fliehkraft erst ab dieser Geschwindigkeit voll (darunter linear abgeschwächt), damit man aus dem Grünstreifen rauskommt
-const CURVE_FORCE_SPEED_THRESHOLD = 60;
-// Mindest-Lenkwirkung (Anteil), damit bei niedriger Geschwindigkeit noch gelenkt werden kann
 const STEERING_MIN_FACTOR = 0.25;
+const STEERING_ENGAGE_RATE = 0.12;
+const STEERING_RETURN_RATE = 0.08;
 
-// Handbremse (linke Shift): weniger Grip = Sliden in Kurven
+// Kurvenfliehkraft (quadratisch: v², gefährlicher bei Highspeed, milder bei Lowspeed)
+const CURVE_FORCE_DIVISOR = 3_600_000;
+const CURVE_FORCE_SPEED_THRESHOLD = 60;
+/** Max roll angle (rad) for centrifugal lean; scale from curve*speed² to angle. */
+const CURVE_ROLL_MAX = 0.22;
+const CURVE_ROLL_SCALE = 8;
+
+// Handbremse (progressiv: baut sich über ~0.25s auf, löst sich über ~0.17s)
 const HANDBRAKE_STEERING_MUL = 0.26;
 const HANDBRAKE_CURVE_MUL = 1.7;
-const HANDBRAKE_DECEL = 0.35;
+const HANDBRAKE_DECEL = 1.5;
+const HANDBRAKE_ENGAGE_RATE = 4.0;
+const HANDBRAKE_RELEASE_RATE = 6.0;
 
-// Schubabschaltung (kein Gas): Verzögerung pro Frame
-const COAST_DECEL = 0.4;
+// Bremse (geschwindigkeitsabhängig: bei niedrigem Tempo sanfter, kein Blockieren)
+const BRAKE_DECEL = 5.0;
+
+// Motorbremse pro Gang (1. Gang = starke Motorbremse, taktisches Runterschalten vor Kurven)
+const GEAR_COAST_DECEL = [1.0, 0.7, 0.5, 0.4, 0.3, 0.2];
+
+// Gang-abhängige Beschleunigung (1. Gang = aggressiv, 6. Gang = schwach)
+const GEAR_ACCEL_RATES = [1.4, 1.1, 0.85, 0.65, 0.5, 0.35];
+
+// Redline-Begrenzer: ab 6200 RPM fällt die Beschleunigung ab, bei 7000 RPM = 0
+const REDLINE_DROPOFF_START = 6200;
+
+// Aerodynamischer Luftwiderstand (quadratisch: bremst bei Highspeed natürlich ab)
+const AERO_DRAG = 0.000006;
+
+// Kontrolle in der Luft: stark reduziert
+const AIR_STEERING_MUL = 0.1;
+const AIR_THROTTLE_MUL = 0.0;
+const AIR_BRAKE_MUL = 0.0;
+
+// Geschwindigkeitsverlust bei harter Landung (proportional zu Aufprallgeschwindigkeit)
+const LANDING_SPEED_LOSS_FACTOR = 0.0004;
+
+// Pitch in air (up/down keys): mild effect so jump arc stays predictable and arcade-like
+const PITCH_UP_GRAVITY_MUL = 0.75;
+const PITCH_DOWN_GRAVITY_MUL = 1.35;
+
+// Clean-Landing Bonus
+const CLEAN_LANDING_MAX_VEL = 80;
+const CLEAN_LANDING_BOOST = 10;
+
+// NPC-Sprungphysik
+const NPC_RAMP_LAUNCH_FACTOR = 0.65;
+const NPC_AIR_GRAVITY = 65;
+
+// Hangabtriebskraft: Schwerkraft entlang der Steigung (positiv = bergauf bremst, negativ = bergab beschleunigt)
+const SLOPE_GRAVITY_FACTOR = 0.55;
 
 // --- Getriebe (manuell) ---
 const NUM_GEARS = 6;
@@ -121,6 +166,9 @@ const RPM_IDLE = 800;
 const RPM_IN_AIR = 6400;
 
 let currentGear = 1;
+let lastTimestamp = 0;
+let steeringVel = 0;
+let handbrakeAmount = 0;
 
 let segments = [];
 let cars = [];
@@ -470,7 +518,6 @@ function buildRoad(trackData) {
     const zones = trackData.zones || [];
     const startSegmentCount = trackData.startSegmentCount ?? 6;
 
-    RAMPS = ramps;
     segments = [];
 
     const noCurveSegments = new Set();
@@ -612,11 +659,16 @@ function buildRoad(trackData) {
     const trackLength = segmentCount * segmentLength;
     cars = [];
     for (let i = 0; i < 100; i++) {
+        const isOncoming = i >= 80;
+        const dir = isOncoming ? -1 : 1;
+        const offset = isOncoming
+            ? -(0.25 + Math.random() * 0.4)
+            : 0.25 + Math.random() * 0.6;
         cars.push({
             z: Math.random() * trackLength,
-            offset: 0.25 + Math.random() * 0.6,
-            speed: 40 + Math.random() * 60,
-            dir: 1,
+            offset: offset,
+            speed: isOncoming ? 60 + Math.random() * 80 : 40 + Math.random() * 60,
+            dir: dir,
             color: `hsl(${Math.floor(Math.random() * 360)}, 80%, 50%)`,
             crashed: false,
             crashRot: 0,
@@ -626,7 +678,9 @@ function buildRoad(trackData) {
             crashY: 0,
             crashVelY: 0,
             crashTimer: 0,
-            originalSpeed: 0
+            originalSpeed: 0,
+            airY: 0,
+            airVelY: 0
         });
     }
 }
@@ -651,6 +705,28 @@ function project(p, worldX, worldY, worldZ, camX, camY, camZ) {
 }
 
 /**
+ * Projects a world point into 2D for the rear-view mirror (camera looks backward).
+ * z = camZ - worldZ so segments behind the player have positive z.
+ * Output coordinates are in mirror viewport space (centerX, centerY, viewW, viewH).
+ */
+function projectRear(p, worldX, worldY, worldZ, camX, camY, camZ, centerX, centerY, viewW, viewH) {
+    let z = Math.max(1, camZ - worldZ);
+    let scale = cameraDepth / z;
+    p.x = Math.round(centerX + (scale * (worldX - camX) * viewW / 2));
+    p.y = Math.round(centerY - (scale * (worldY - camY) * viewH / 2));
+    p.w = Math.max(1, Math.round(scale * roadWidth * viewW / 2));
+}
+
+/** Like projectRear but takes distance-behind directly (for wrapped track). */
+function projectRearByDistance(p, worldX, worldY, zBehind, camX, camY, centerX, centerY, viewW, viewH) {
+    let z = Math.max(1, zBehind);
+    let scale = cameraDepth / z;
+    p.x = Math.round(centerX + (scale * (worldX - camX) * viewW / 2));
+    p.y = Math.round(centerY - (scale * (worldY - camY) * viewH / 2));
+    p.w = Math.max(1, Math.round(scale * roadWidth * viewW / 2));
+}
+
+/**
  * Zeichnet ein Trapez (Quad) als Strasse/Rand-Band zwischen zwei projizierten Querschnitten.
  * @param {string} color - Fuellfarbe (z.B. aus COLORS.road, COLORS.rumble).
  * @param {number} x1 - Linke/rechte Bildschirm-X des vorderen Querschnitts.
@@ -667,14 +743,134 @@ function drawQuad(color, x1, y1, w1, x2, y2, w2) {
     ctx.fill();
 }
 
+/** Rear-view mirror: size and position (top-center, so it doesn't overlap Lap/Time on the left). */
+const MIRROR_W = 200;
+const MIRROR_H = 95;
+const MIRROR_Y = 12;
+const MIRROR_SEGMENTS = 100;
+
+/**
+ * Draws the rear-view mirror: road behind the player (perspective looking backward).
+ */
+function drawRearViewMirror(startSegIndex, camX, camY, camZ) {
+    if (!segments.length) return;
+    const mirrorX = Math.floor(width / 2 - MIRROR_W / 2);
+    const L = segments.length;
+    const centerX = mirrorX + MIRROR_W / 2;
+    const centerY = MIRROR_Y + MIRROR_H / 2;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(mirrorX, MIRROR_Y, MIRROR_W, MIRROR_H);
+    ctx.clip();
+
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+    ctx.fillRect(mirrorX, MIRROR_Y, MIRROR_W, MIRROR_H);
+
+    const _pNear = { x: 0, y: 0, w: 0 };
+    const _pFar = { x: 0, y: 0, w: 0 };
+    let xBack = 0;
+    let maxY = MIRROR_Y + MIRROR_H;
+
+    for (let n = 1; n <= MIRROR_SEGMENTS; n++) {
+        const s = (startSegIndex - n + L * 100) % L;
+        const sNext = (s + 1) % L;
+        const seg = segments[s];
+        const nextSeg = segments[sNext];
+        const nearZ = (s + 1) * segmentLength;
+        const farZ = s * segmentLength;
+
+        xBack -= seg.curve;
+        const xNear = xBack + seg.curve;
+        const xFar = xBack;
+
+        projectRear(_pNear, xNear, nextSeg.y, nearZ, camX, camY, camZ, centerX, centerY, MIRROR_W, MIRROR_H);
+        projectRear(_pFar, xFar, seg.y, farZ, camX, camY, camZ, centerX, centerY, MIRROR_W, MIRROR_H);
+
+        if (_pNear.y >= maxY && _pFar.y >= maxY) continue;
+
+        ctx.fillStyle = seg.color.grass;
+        const topY = Math.min(_pNear.y, _pFar.y);
+        if (maxY > topY) ctx.fillRect(mirrorX, topY, MIRROR_W, maxY - topY);
+        maxY = topY;
+
+        drawQuad(seg.color.rumble, _pNear.x, _pNear.y, _pNear.w * 1.1, _pFar.x, _pFar.y, _pFar.w * 1.1);
+        drawQuad(seg.color.road, _pNear.x, _pNear.y, _pNear.w, _pFar.x, _pFar.y, _pFar.w);
+    }
+
+    const trackLength = L * segmentLength;
+    const mirrorClipY = MIRROR_Y + MIRROR_H;
+    const _pSprite = { x: 0, y: 0, w: 0 };
+    const mirrorSprites = [];
+    let xBackAcc = 0;
+    const xFarByN = [];
+    const xNearByN = [];
+    for (let n = 1; n <= MIRROR_SEGMENTS; n++) {
+        const s = (startSegIndex - n + L * 100) % L;
+        const seg = segments[s];
+        xBackAcc -= seg.curve;
+        xFarByN[n] = xBackAcc;
+        xNearByN[n] = xBackAcc + seg.curve;
+    }
+
+    for (let n = 1; n <= MIRROR_SEGMENTS; n++) {
+        const s = (startSegIndex - n + L * 100) % L;
+        const seg = segments[s];
+        const farZ = s * segmentLength;
+        const xNear = xNearByN[n];
+        const xFar = xFarByN[n];
+
+        for (let i = 0; i < seg.sprites.length; i++) {
+            const sprite = seg.sprites[i];
+            const worldX = xFar + sprite.offset * roadWidth;
+            projectRear(_pSprite, worldX, seg.y, farZ, camX, camY, camZ, centerX, centerY, MIRROR_W, MIRROR_H);
+            if (_pSprite.x >= mirrorX - 50 && _pSprite.x <= mirrorX + MIRROR_W + 50 && _pSprite.y >= MIRROR_Y - 20 && _pSprite.y <= mirrorClipY + 20) {
+                mirrorSprites.push({ type: sprite.type, data: sprite.data, x: _pSprite.x, y: _pSprite.y, w: _pSprite.w });
+            }
+        }
+
+        for (let i = 0; i < seg.cars.length; i++) {
+            const car = seg.cars[i];
+            const zBehind = (camZ - car.z + trackLength) % trackLength;
+            if (zBehind <= 0 || zBehind > MIRROR_SEGMENTS * segmentLength) continue;
+            const t = (car.z - s * segmentLength) / segmentLength;
+            const roadX = xFar + t * (xNear - xFar) + car.offset * roadWidth;
+            const segY = seg.y;
+            projectRearByDistance(_pSprite, roadX, segY, zBehind, camX, camY, centerX, centerY, MIRROR_W, MIRROR_H);
+            if (_pSprite.x >= mirrorX - 50 && _pSprite.x <= mirrorX + MIRROR_W + 50 && _pSprite.y >= MIRROR_Y - 20 && _pSprite.y <= mirrorClipY + 20) {
+                mirrorSprites.push({ type: 'NPC_CAR', data: car, x: _pSprite.x, y: _pSprite.y, w: _pSprite.w });
+            }
+        }
+    }
+
+    mirrorSprites.sort((a, b) => b.y - a.y);
+    for (let i = 0; i < mirrorSprites.length; i++) {
+        const o = mirrorSprites[i];
+        drawProceduralSprite({ type: o.type, data: o.data }, o.x, o.y, o.w, mirrorClipY);
+    }
+
+    ctx.restore();
+
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(mirrorX, MIRROR_Y, MIRROR_W, MIRROR_H);
+}
+
 /**
  * Zeichnet Himmel, Wolken und Berge als Parallax-Hintergrund.
  * @param {number} horizonY - Bildschirm-Y der Horizontlinie.
  */
+let _cachedSkyGradient = null;
+let _cachedSkyH = 0;
+
 function drawParallaxLayers(horizonY) {
-    let gradient = ctx.createLinearGradient(0, 0, 0, height);
-    gradient.addColorStop(0, COLORS.SKY_TOP); gradient.addColorStop(1, COLORS.SKY_BOTTOM);
-    ctx.fillStyle = gradient; ctx.fillRect(0, 0, width, height);
+    if (!_cachedSkyGradient || _cachedSkyH !== height) {
+        _cachedSkyGradient = ctx.createLinearGradient(0, 0, 0, height);
+        _cachedSkyGradient.addColorStop(0, COLORS.SKY_TOP);
+        _cachedSkyGradient.addColorStop(1, COLORS.SKY_BOTTOM);
+        _cachedSkyH = height;
+    }
+    ctx.fillStyle = _cachedSkyGradient; ctx.fillRect(0, 0, width, height);
 
     let cloudBaseY = horizonY - 250;
     let cloudScrollX = skyOffset * 0.2;
@@ -783,12 +979,14 @@ function drawProceduralSprite(spriteObj, destX, destY, destW, clipY) {
         ctx.fillStyle = '#EEE'; ctx.fillRect(destX - signW / 2 + 15 * s, destY - poleH - signH + 15 * s, signW - 30 * s, signH - 30 * s);
     } else if (spriteObj.type === 'NPC_CAR') {
         let car = spriteObj.data; let carW = 140 * s; let carH = 70 * s;
-        const npcDrawY = destY - (car.crashY || 0) * s * 0.4;
+        const totalLift = (car.crashY || 0) + (car.airY || 0);
+        const npcDrawY = destY - totalLift * s * 0.4;
 
-        if (car.crashed && car.crashY > 0) {
-            ctx.fillStyle = 'rgba(0,0,0,0.25)';
+        if (totalLift > 0) {
+            const shadowScale = Math.max(0.15, 1 - totalLift * 0.001);
+            ctx.fillStyle = `rgba(0,0,0,${0.25 * shadowScale})`;
             ctx.beginPath();
-            ctx.ellipse(destX, destY, Math.max(5, carW * 0.4), 6 * s, 0, 0, Math.PI * 2);
+            ctx.ellipse(destX, destY, Math.max(5, carW * 0.4 * shadowScale), 6 * s * shadowScale, 0, 0, Math.PI * 2);
             ctx.fill();
         }
 
@@ -834,7 +1032,7 @@ function drawRPMGauge(rpm) {
         if (i % 2000 === 0 || i === RPM_REDLINE) ctx.fillText(String(i / 1000) + 'k', cx + Math.cos(angle) * (r - 20), cy - Math.sin(angle) * (r - 20));
     }
     ctx.strokeStyle = 'rgba(255, 60, 60, 0.95)'; ctx.lineWidth = 5;
-    ctx.beginPath(); ctx.arc(cx, cy, r, Math.PI * (1 - 6000 / RPM_REDLINE), 0, false); ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx, cy, r, Math.PI * (1 - REDLINE_DROPOFF_START / RPM_REDLINE), 0, false); ctx.stroke();
     const needleAngle = Math.PI - (Math.min(rpm, RPM_REDLINE) / RPM_REDLINE) * Math.PI, len = r - 10;
     ctx.strokeStyle = '#1a1a1a'; ctx.lineWidth = 4; ctx.lineCap = 'round';
     ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(needleAngle) * len, cy - Math.sin(needleAngle) * len); ctx.stroke();
@@ -867,7 +1065,7 @@ function drawSpeedGauge(speedKmh) {
     const speedClamped = Math.min(speedKmh, maxSpeed), needleAngle = Math.PI - (speedClamped / maxSpeed) * Math.PI, len = r - 10;
     ctx.strokeStyle = '#1a1a1a'; ctx.lineWidth = 4; ctx.lineCap = 'round';
     ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(needleAngle) * len, cy - Math.sin(needleAngle) * len); ctx.stroke();
-    ctx.strokeStyle = speedKmh > 280 ? '#FF4444' : '#FFF'; ctx.lineWidth = 2.5;
+    ctx.strokeStyle = speedKmh > maxSpeed * 0.92 ? '#FF4444' : '#FFF'; ctx.lineWidth = 2.5;
     ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(needleAngle) * len, cy - Math.sin(needleAngle) * len); ctx.stroke();
     ctx.fillStyle = '#333'; ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = '#555'; ctx.lineWidth = 1; ctx.stroke();
@@ -1042,30 +1240,30 @@ function render() {
     let x = 0, dx = 0, maxY = height;
     let spritesToDraw = [];
 
+    const _projTmp = { x: 0, y: 0, w: 0 };
+
     for (let n = 0; n < 300; n++) {
         let seg = segments[(startSegIndex + n) % segments.length];
-        seg.z = (startSegIndex + n) * segmentLength;
+        const segZ = (startSegIndex + n) * segmentLength;
 
-        project(seg.p1, x, seg.y, seg.z, camX, camY, camZ - (n === 0 ? offset : 0));
+        project(seg.p1, x, seg.y, segZ, camX, camY, camZ - (n === 0 ? offset : 0));
         let currentCurveX = x;
         x += dx; dx += seg.curve;
 
         for (let i = 0; i < seg.sprites.length; i++) {
-            let spriteP = { x: 0, y: 0, w: 0 };
-            project(spriteP, currentCurveX + seg.sprites[i].offset * roadWidth, seg.y, seg.z, camX, camY, camZ - (n === 0 ? offset : 0));
-            if (spriteP.x > -1000 && spriteP.x < width + 1000) {
-                spritesToDraw.push({ type: seg.sprites[i].type, data: seg.sprites[i].data, x: spriteP.x, y: spriteP.y, w: spriteP.w, clipY: maxY });
+            project(_projTmp, currentCurveX + seg.sprites[i].offset * roadWidth, seg.y, segZ, camX, camY, camZ - (n === 0 ? offset : 0));
+            if (_projTmp.x > -1000 && _projTmp.x < width + 1000) {
+                spritesToDraw.push({ type: seg.sprites[i].type, data: seg.sprites[i].data, x: _projTmp.x, y: _projTmp.y, w: _projTmp.w, clipY: maxY });
             }
         }
 
         for (let i = 0; i < seg.cars.length; i++) {
             let car = seg.cars[i];
-            let carP = { x: 0, y: 0, w: 0 };
-            let carVisualZ = seg.z + (car.z % segmentLength);
-            project(carP, currentCurveX + car.offset * roadWidth, seg.y, carVisualZ, camX, camY, camZ - (n === 0 ? offset : 0));
+            let carVisualZ = segZ + (car.z % segmentLength);
+            project(_projTmp, currentCurveX + car.offset * roadWidth, seg.y, carVisualZ, camX, camY, camZ - (n === 0 ? offset : 0));
 
-            if (carP.x > -1000 && carP.x < width + 1000) {
-                spritesToDraw.push({ type: 'NPC_CAR', data: car, x: carP.x, y: carP.y, w: carP.w, clipY: maxY });
+            if (_projTmp.x > -1000 && _projTmp.x < width + 1000) {
+                spritesToDraw.push({ type: 'NPC_CAR', data: car, x: _projTmp.x, y: _projTmp.y, w: _projTmp.w, clipY: maxY });
             }
         }
 
@@ -1083,6 +1281,8 @@ function render() {
         drawProceduralSprite(spritesToDraw[i], spritesToDraw[i].x, spritesToDraw[i].y, spritesToDraw[i].w, spritesToDraw[i].clipY);
     }
 
+    drawRearViewMirror(startSegIndex, camX, camY, camZ);
+
     const carW = 130; const carH = 55;
     let carX = width / 2 - carW / 2;
 
@@ -1092,9 +1292,24 @@ function render() {
 
     ctx.save();
     if (onShoulder && speed > 0 && jumpHeight === 0) {
-        const jitterX = (Math.random() - 0.5) * 6;
-        const jitterY = (Math.random() - 0.5) * 3;
+        const t = performance.now();
+        const jitterX = Math.sin(t * 0.047) * 3 + Math.sin(t * 0.113) * 2;
+        const jitterY = Math.sin(t * 0.073) * 1.5 + Math.sin(t * 0.157) * 1;
         ctx.translate(jitterX, jitterY);
+    }
+    // Centrifugal lean: tighter/faster curve = stronger roll (only on ground)
+    if (!isCrashed && jumpHeight === 0 && speed > 0) {
+        let curveForceVisual = (baseSeg.curve * speed * speed) / CURVE_FORCE_DIVISOR;
+        if (speed < CURVE_FORCE_SPEED_THRESHOLD) curveForceVisual *= speed / CURVE_FORCE_SPEED_THRESHOLD;
+        curveForceVisual *= (1 + handbrakeAmount * (HANDBRAKE_CURVE_MUL - 1));
+        const rollAngle = Math.max(-CURVE_ROLL_MAX, Math.min(CURVE_ROLL_MAX, curveForceVisual * CURVE_ROLL_SCALE));
+        if (Math.abs(rollAngle) > 0.008) {
+            const cx = carX + carW / 2;
+            const cy = height - carH - 20 + (speed > 0 && !isCrashed ? Math.sin(performance.now() * 0.012) * 1.2 + Math.sin(performance.now() * 0.029) * 0.6 : 0) - (jumpHeight * 0.015) + carH / 2;
+            ctx.translate(cx, cy);
+            ctx.rotate(rollAngle);
+            ctx.translate(-cx, -cy);
+        }
     }
     if (isCrashed) {
         let cx = carX + carW / 2;
@@ -1102,9 +1317,20 @@ function render() {
         ctx.translate(cx, cy - jumpHeight * 0.015);
         ctx.rotate(crashRot);
         ctx.translate(-cx, -(cy - jumpHeight * 0.015));
+    } else if (jumpHeight > 0) {
+        let pitchAngle = 0;
+        if (keys.ArrowUp) pitchAngle = -0.12;
+        else if (keys.ArrowDown) pitchAngle = 0.15;
+        if (pitchAngle !== 0) {
+            let cx = carX + carW / 2;
+            let cy = height - carH - 20 - jumpHeight * 0.015 + carH / 2;
+            ctx.translate(cx, cy);
+            ctx.rotate(pitchAngle);
+            ctx.translate(-cx, -cy);
+        }
     }
 
-    const bounce = (speed > 0 && jumpHeight === 0 && !isCrashed) ? Math.random() * 2 : 0;
+    const bounce = (speed > 0 && jumpHeight === 0 && !isCrashed) ? Math.sin(performance.now() * 0.012) * 1.2 + Math.sin(performance.now() * 0.029) * 0.6 : 0;
     const carY = height - carH - 20 + bounce - (jumpHeight * 0.015);
 
     if (jumpHeight > 0 && !isCrashed) {
@@ -1129,7 +1355,7 @@ function render() {
  * @param {{ startSegIndex: number, baseSeg: object, nextSeg: object, trackElevation: number }} trackState - Aktueller Streckenzustand von getTrackState().
  */
 function checkStaticObstacleCollision(trackState) {
-    const inAir = playerY > trackState.trackElevation + 80;
+    const inAir = playerY > trackState.trackElevation + IN_AIR_THRESHOLD || playerVelY > 25;
     if (inAir) return;
     if (Date.now() - crashResetAt < CRASH_INVULN_MS) return;
 
@@ -1176,53 +1402,82 @@ function crashNPCCar(car, impactSpeed, lateralDir) {
     playCrashSound();
 }
 
-function updateNPCsAndCheckCollision(trackState) {
+let _dirtyCarSegments = [];
+
+function updateNPCsAndCheckCollision(trackState, dt60) {
     const maxZ = segments.length * segmentLength;
-    for (let i = 0; i < segments.length; i++) segments[i].cars = [];
+    for (let i = 0; i < _dirtyCarSegments.length; i++) _dirtyCarSegments[i].cars = [];
+    _dirtyCarSegments = [];
 
     for (let i = 0; i < cars.length; i++) {
         const car = cars[i];
 
         if (car.crashed) {
-            car.crashTimer++;
-            car.crashRot += car.crashSpin;
-            car.crashSpin *= 0.985;
-            car.crashVelY -= NPC_CRASH_GRAVITY;
-            car.crashY += car.crashVelY;
+            car.crashTimer += dt60;
+            car.crashRot += car.crashSpin * dt60;
+            car.crashSpin *= Math.pow(0.985, dt60);
+            car.crashVelY -= NPC_CRASH_GRAVITY * dt60;
+            car.crashY += car.crashVelY * dt60;
             if (car.crashY < 0) {
                 car.crashY = 0;
                 car.crashVelY = Math.abs(car.crashVelY) > 30
                     ? -car.crashVelY * 0.3 : 0;
                 car.crashSpin *= 0.5;
             }
-            car.offset += car.crashVelX;
-            car.crashVelX *= 0.97;
-            car.z += car.crashVelZ;
-            car.crashVelZ *= 0.95;
+            car.offset += car.crashVelX * dt60;
+            car.crashVelX *= Math.pow(0.97, dt60);
+            car.z += car.crashVelZ * dt60;
+            car.crashVelZ *= Math.pow(0.95, dt60);
 
             if (car.z < 0) car.z += maxZ;
             if (car.z >= maxZ) car.z -= maxZ;
-            segments[Math.floor(car.z / segmentLength) % segments.length].cars.push(car);
+            const crashSeg = segments[Math.floor(car.z / segmentLength) % segments.length];
+            crashSeg.cars.push(car);
+            _dirtyCarSegments.push(crashSeg);
 
             if (car.crashTimer > NPC_RESPAWN_DELAY) {
                 car.crashed = false;
                 car.crashRot = 0;
                 car.crashY = 0;
+                car.airY = 0;
+                car.airVelY = 0;
                 car.speed = car.originalSpeed;
-                car.offset = 0.25 + Math.random() * 0.6;
+                car.offset = car.dir === -1
+                    ? -(0.25 + Math.random() * 0.4)
+                    : 0.25 + Math.random() * 0.6;
                 const playerZ = position % maxZ;
                 car.z = (playerZ + 4000 + Math.random() * 6000) % maxZ;
             }
             continue;
         }
 
-        car.z += car.dir * car.speed;
+        car.z += car.dir * car.speed * dt60;
         if (car.z < 0) car.z += maxZ;
         if (car.z >= maxZ) car.z -= maxZ;
-        segments[Math.floor(car.z / segmentLength) % segments.length].cars.push(car);
+
+        const carSegIdx = Math.floor(car.z / segmentLength) % segments.length;
+        const carSeg = segments[carSegIdx];
+
+        if (!car.airY && car.airVelY <= 0 && carSeg.rampTakeoff && car.speed > 20) {
+            const launchMul = Math.min(1, car.speed / 150);
+            car.airVelY = RAMP_LAUNCH_VELOCITY * NPC_RAMP_LAUNCH_FACTOR * (0.4 + 0.6 * launchMul);
+        }
+
+        if (car.airVelY > 0 || car.airY > 0) {
+            car.airVelY -= NPC_AIR_GRAVITY * dt60;
+            car.airY += car.airVelY * dt60;
+            if (car.airY <= 0) {
+                car.airY = 0;
+                car.airVelY = 0;
+            }
+        }
+
+        carSeg.cars.push(car);
+        _dirtyCarSegments.push(carSeg);
 
         const distToPlayerZ = Math.abs(car.z - (position % maxZ + COLLISION_Z_OFFSET));
-        if (distToPlayerZ >= COLLISION_Z_RANGE || playerY > trackState.trackElevation + 1500) continue;
+        const playerInAir = playerY > trackState.trackElevation + IN_AIR_THRESHOLD || playerVelY > 25;
+        if (distToPlayerZ >= COLLISION_Z_RANGE || playerInAir) continue;
         if (Math.abs(playerX - car.offset) >= COLLISION_PLAYER_CAR_X) continue;
         if (Date.now() - crashResetAt < CRASH_INVULN_MS) continue;
 
@@ -1258,12 +1513,18 @@ function updateNPCsAndCheckCollision(trackState) {
  * Haupt-Game-Loop (per requestAnimationFrame). Aktualisiert Crash-Zustand, Rundenzeit,
  * Kollisionen, Beschleunigung/Lenkung/Handbremse, Position/Hoehe, Motorsound und rendert einen Frame.
  */
-function update() {
+function update(timestamp) {
+    if (!lastTimestamp) lastTimestamp = timestamp || performance.now();
+    const dtRaw = Math.min(((timestamp || performance.now()) - lastTimestamp) / 1000, 0.05);
+    lastTimestamp = timestamp || performance.now();
+    const dt60 = dtRaw * TARGET_FPS;
+
     if (isCrashed) {
-        crashRot += crashSpinSpeed;
-        playerVelY -= 15;
-        playerY += playerVelY;
-        position += speed;
+        crashRot += crashSpinSpeed * dt60;
+        playerVelY -= 15 * dt60;
+        playerY += playerVelY * dt60;
+        speed = Math.max(0, speed - 2 * dt60);
+        position += speed * dt60;
 
         const trackStateCrash = getTrackState(position);
         const groundHeight = trackStateCrash.trackElevation;
@@ -1277,17 +1538,18 @@ function update() {
             crashRot = 0;
             playerX = 0;
             currentGear = 1;
+            steeringVel = 0;
+            handbrakeAmount = 0;
         }
 
         updateEngineSound(RPM_IDLE, 0);
-
         render();
         requestAnimationFrame(update);
         return;
     }
 
     let trackLength = segments.length * segmentLength;
-    if (position > currentLap * trackLength) {
+    if (position >= trackLength) {
         lastLapTime = currentLapTime;
         currentLap++;
         lapStartTime = Date.now();
@@ -1297,74 +1559,144 @@ function update() {
 
     let trackState = getTrackState(position);
     checkStaticObstacleCollision(trackState);
-    if (!isCrashed) updateNPCsAndCheckCollision(trackState);
+    if (!isCrashed) updateNPCsAndCheckCollision(trackState, dt60);
 
     let { startSegIndex, offset, baseSeg, nextSeg, trackElevation } = trackState;
-    const onShoulder = Math.abs(playerX) > ROAD_EDGE;
-    const gearMaxSpeed = GEAR_MAX_SPEEDS[currentGear - 1];
-    const effectiveMaxSpeed = onShoulder
-        ? Math.min(SHOULDER_MAX_SPEED, gearMaxSpeed)
-        : gearMaxSpeed;
-    let accelRate = onShoulder ? SHOULDER_ACCEL : 0.7;
+    const inAir = playerY > trackElevation + IN_AIR_THRESHOLD;
 
-    // In hohen Gängen bei niedriger Geschwindigkeit kaum beschleunigen (nicht „anfahren“)
+    // --- Handbremse (progressiv) ---
+    if (keys.ShiftLeft) {
+        handbrakeAmount = Math.min(1, handbrakeAmount + HANDBRAKE_ENGAGE_RATE * dtRaw);
+    } else {
+        handbrakeAmount = Math.max(0, handbrakeAmount - HANDBRAKE_RELEASE_RATE * dtRaw);
+    }
+
+    // --- Seitenstreifen (progressiv) ---
+    const shoulderDepth = Math.max(0, Math.abs(playerX) - ROAD_EDGE);
+    const shoulderFactor = Math.min(1, shoulderDepth * SHOULDER_GRIP_FALLOFF);
+    const onShoulder = shoulderFactor > 0;
+
+    // --- Gang, RPM, Redline ---
+    const gearMaxSpeed = GEAR_MAX_SPEEDS[currentGear - 1];
+    const rpm = computeRpm(speed, currentGear);
+
+    let accelRate = GEAR_ACCEL_RATES[currentGear - 1];
+
+    if (rpm > REDLINE_DROPOFF_START) {
+        const dropoff = 1 - (rpm - REDLINE_DROPOFF_START) / (RPM_REDLINE - REDLINE_DROPOFF_START);
+        accelRate *= Math.max(0, dropoff);
+    }
+
     const gearMinSpeed = GEAR_MIN_SPEEDS[currentGear - 1];
-    if (speed < gearMinSpeed && keys.ArrowUp) {
+    if (speed < gearMinSpeed) {
         accelRate *= 0.06;
     }
 
-    if (keys.ArrowUp) speed = Math.min(speed + accelRate, effectiveMaxSpeed);
-    else if (keys.ArrowDown) speed = Math.max(speed - 6, 0);
-    else speed = Math.max(speed - COAST_DECEL, 0);
+    if (onShoulder) {
+        accelRate = Math.min(accelRate, SHOULDER_ACCEL);
+    }
 
-    if (onShoulder && speed > SHOULDER_MAX_SPEED) speed = Math.max(SHOULDER_MAX_SPEED, speed - 5);
-    speed = Math.min(speed, effectiveMaxSpeed);
+    // --- Beschleunigung / Bremse / Motorbremse ---
+    const throttleEff = inAir ? AIR_THROTTLE_MUL : 1;
+    const brakeEff = inAir ? AIR_BRAKE_MUL : 1;
 
-    position += speed;
+    if (keys.ArrowUp) {
+        speed = Math.min(speed + accelRate * throttleEff * dt60, gearMaxSpeed);
+    } else if (keys.ArrowDown) {
+        const brakePower = BRAKE_DECEL * Math.min(1, 0.3 + 0.7 * speed / 60) * brakeEff;
+        speed = Math.max(0, speed - brakePower * dt60);
+    } else {
+        const coastDecel = GEAR_COAST_DECEL[currentGear - 1];
+        speed = Math.max(0, speed - coastDecel * dt60);
+    }
+
+    // --- Luftwiderstand (quadratisch) ---
+    speed = Math.max(0, speed - AERO_DRAG * speed * speed * dt60);
+
+    // --- Hangabtriebskraft (bergauf bremst, bergab beschleunigt) ---
+    if (!inAir) {
+        const slope = (nextSeg.y - baseSeg.y) / segmentLength;
+        const slopeForce = -slope * SLOPE_GRAVITY_FACTOR;
+        speed = Math.max(0, speed + slopeForce * dt60);
+    }
+
+    // --- Handbremse Verzögerung ---
+    if (handbrakeAmount > 0 && speed > 0) {
+        speed = Math.max(0, speed - HANDBRAKE_DECEL * handbrakeAmount * dt60);
+    }
+
+    // --- Seitenstreifen Geschwindigkeitsreduktion ---
+    if (onShoulder) {
+        const shoulderMax = Math.max(10, SHOULDER_MAX_SPEED * (1 - shoulderFactor * 0.5));
+        if (speed > shoulderMax) {
+            speed = Math.max(shoulderMax, speed - (3 + shoulderFactor * 4) * dt60);
+        }
+    }
+
+    position += speed * dt60;
 
     ({ startSegIndex, offset, baseSeg, nextSeg, trackElevation } = getTrackState(position));
 
+    // --- Rampen-Absprung ---
     if (!isCrashed && baseSeg.rampTakeoff && playerY <= trackElevation + 120 && playerVelY <= 80 && speed > 30) {
         const launchMul = Math.min(1, speed / maxSpeed);
         playerVelY = RAMP_LAUNCH_VELOCITY * (0.5 + 0.5 * launchMul);
     }
 
-    const wasInAir = playerY > trackElevation + 60;
-    playerVelY -= GRAVITY_JUMP;
-    playerY += playerVelY;
+    // --- Vertical physics: gravity in air always (even at speed 0), mild pitch for arcade arc ---
+    const wasInAir = playerY > trackElevation + IN_AIR_THRESHOLD;
+
+    let gravMul = 1.0;
+    if (inAir) {
+        if (keys.ArrowUp) gravMul = PITCH_UP_GRAVITY_MUL;
+        else if (keys.ArrowDown) gravMul = PITCH_DOWN_GRAVITY_MUL;
+    }
+
+    playerVelY -= GRAVITY_JUMP * gravMul * dt60;
+    playerY += playerVelY * dt60;
     if (playerY < trackElevation) {
         const impactVel = playerVelY;
         playerY = trackElevation;
         if (wasInAir && impactVel < -LANDING_BOUNCE_THRESHOLD) {
             playerVelY = Math.min(180, -impactVel * LANDING_BOUNCE_FACTOR);
+            const speedLoss = Math.abs(impactVel) * LANDING_SPEED_LOSS_FACTOR * speed;
+            speed = Math.max(0, speed - speedLoss);
+        } else if (wasInAir && Math.abs(impactVel) < CLEAN_LANDING_MAX_VEL) {
+            speed = Math.min(maxSpeed, speed + CLEAN_LANDING_BOOST);
+            playerVelY = 0;
         } else {
             playerVelY = 0;
         }
     }
 
+    // --- Kurvenfliehkraft (quadratisch) ---
     let currentSeg = segments[startSegIndex];
-    if (speed > 0) skyOffset += currentSeg.curve * (speed / maxSpeed) * 4;
+    if (speed > 0) skyOffset += currentSeg.curve * (speed / maxSpeed) * 4 * dt60;
 
-    if (speed > 0) {
-        let curveForce = (currentSeg.curve * speed) / CURVE_FORCE_DIVISOR;
+    if (speed > 0 && !inAir) {
+        let curveForce = (currentSeg.curve * speed * speed) / CURVE_FORCE_DIVISOR;
         if (speed < CURVE_FORCE_SPEED_THRESHOLD) {
             curveForce *= speed / CURVE_FORCE_SPEED_THRESHOLD;
         }
-        if (keys.ShiftLeft) curveForce *= HANDBRAKE_CURVE_MUL;
-        playerX -= curveForce;
+        curveForce *= (1 + handbrakeAmount * (HANDBRAKE_CURVE_MUL - 1));
+        playerX -= curveForce * dt60;
     }
-    let steeringMul = Math.max(STEERING_MIN_FACTOR, speed / maxSpeed);
-    if (keys.ShiftLeft) steeringMul *= HANDBRAKE_STEERING_MUL;
-    if (keys.ArrowLeft) playerX -= STEERING_FACTOR * steeringMul;
-    if (keys.ArrowRight) playerX += STEERING_FACTOR * steeringMul;
 
-    if (keys.ShiftLeft && speed > 0) speed = Math.max(0, speed - HANDBRAKE_DECEL);
+    // --- Lenkung mit Trägheit ---
+    const steerInput = (keys.ArrowLeft ? -1 : 0) + (keys.ArrowRight ? 1 : 0);
+    let steerFactor = Math.max(STEERING_MIN_FACTOR, speed / maxSpeed);
+    steerFactor *= (1 - handbrakeAmount * (1 - HANDBRAKE_STEERING_MUL));
+    if (inAir) steerFactor *= AIR_STEERING_MUL;
+
+    const steerTarget = steerInput * STEERING_FACTOR * steerFactor;
+    const lerpRate = steerInput !== 0 ? STEERING_ENGAGE_RATE : STEERING_RETURN_RATE;
+    steeringVel += (steerTarget - steeringVel) * Math.min(1, lerpRate * dt60);
+    playerX += steeringVel * dt60;
 
     playerX = Math.max(-2.5, Math.min(2.5, playerX));
 
-    const inAir = !isCrashed && (playerY > trackElevation + 60);
-    const rpm = computeRpm(speed, currentGear);
-    updateEngineSound(inAir ? RPM_IN_AIR : rpm, inAir ? 1 : (keys.ArrowUp ? 1 : 0));
+    const rpmForSound = computeRpm(speed, currentGear);
+    updateEngineSound(inAir ? RPM_IN_AIR : rpmForSound, inAir ? 1 : (keys.ArrowUp ? 1 : 0));
 
     render();
     requestAnimationFrame(update);
@@ -1373,9 +1705,9 @@ function update() {
 loadTrackData()
     .then(data => {
         buildRoad(data || getDefaultTrack());
-        update();
+        requestAnimationFrame(update);
     })
     .catch(() => {
         buildRoad(getDefaultTrack());
-        update();
+        requestAnimationFrame(update);
     });

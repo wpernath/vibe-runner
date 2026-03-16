@@ -13,17 +13,19 @@
 <body>
 
     <div id="gameContainer">
-        <canvas id="gameCanvas" width="800" height="600" aria-label="Racing game, controls: arrow keys or touch"></canvas>
+        <canvas id="gameCanvas" width="1024" height="768" aria-label="Racing game, controls: arrow keys or touch"></canvas>
     </div>
 
     <p id="desktopHint">Controls: <span class="keys">Arrow keys</span> | <span class="keys">Q</span>/<span class="keys">A</span> Shift gears | <span class="keys">Shift</span> Handbrake</p>
 
     <div id="touchControls" class="touch-controls" aria-hidden="true">
-        <button type="button" class="touch-btn touch-left" data-key="ArrowLeft" aria-label="Steer left"></button>
-        <button type="button" class="touch-btn touch-right" data-key="ArrowRight" aria-label="Steer right"></button>
-        <button type="button" class="touch-btn touch-gas" data-key="ArrowUp" aria-label="Accelerate"></button>
-        <button type="button" class="touch-btn touch-brake" data-key="ArrowDown" aria-label="Brake"></button>
-        <button type="button" class="touch-btn touch-handbrake" data-key="ShiftLeft" aria-label="Handbrake"></button>
+        <button type="button" class="touch-btn touch-left" data-key="ArrowLeft" aria-label="Steer left">&#9664;</button>
+        <button type="button" class="touch-btn touch-right" data-key="ArrowRight" aria-label="Steer right">&#9654;</button>
+        <button type="button" class="touch-btn touch-gas" data-key="ArrowUp" aria-label="Accelerate">GAS</button>
+        <button type="button" class="touch-btn touch-brake" data-key="ArrowDown" aria-label="Brake">BRK</button>
+        <button type="button" class="touch-btn touch-handbrake" data-key="ShiftLeft" aria-label="Handbrake">HB</button>
+        <button type="button" class="touch-btn touch-gear-up" data-action="gearUp" aria-label="Gear up">&#9650;</button>
+        <button type="button" class="touch-btn touch-gear-down" data-action="gearDown" aria-label="Gear down">&#9660;</button>
     </div>
 
     <script src="game.js"></script>
