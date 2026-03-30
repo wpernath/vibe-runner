@@ -6,16 +6,19 @@ A classic **OutRun-style 2.5D arcade racer** in the browser. One HTML file, one 
 
 ## The Game
 
-You drive a red sports car along an endless track with curves, hills, and two alternating zones: **countryside** (trees, curves) and **city** (buildings, streetlights). Traffic moves in your direction; avoid crashing to keep your lap time running.
+You drive a red sports car on a closed track with curves, hills, ramps, and zones (e.g. **countryside**, **city**, **desert**). Race **10 AI opponents**—first to complete **3 laps** wins. Opponents start with you (staggered), use the same arcade physics, and stay on the road.
 
 ### Features
 
-- **Manual gearbox**: 6 gears; shift up with **Q**, down with **A**. Top speed (250 km/h) only in 6th gear.
-- **Analog gauges**: RPM (with redline) and speedometer, plus digital readouts and current gear.
-- **Handbrake**: Hold **Left Shift** to slide through corners (reduced grip, extra centrifugal force).
+- **Race mode**: 10 opponents, first to 3 laps wins. Live position (e.g. POS: 2/11) and lap counter (LAP: 1/3).
+- **Manual gearbox**: 6 gears; shift up **Q**, down **A**. Top speed 250 km/h in 6th gear.
+- **Analog gauges**: RPM (redline) and speedometer, plus digital readouts and current gear.
+- **Handbrake**: **Left Shift** to slide through corners (reduced grip, extra centrifugal force).
+- **Jumps**: Ramps launch you into the air; speed is preserved in the air, pitch (up/down keys) slightly affects the arc.
+- **Rear-view mirror**: Top-center mirror shows the track and cars behind you.
 - **Procedural engine sound**: Pitch and volume follow RPM and throttle (no audio files).
-- **Crash**: Hit obstacles or traffic at high speed to trigger a crash with sound; you reset after falling. Short invulnerability after reset to avoid crash loops.
-- **Lap timing**: Lap counter and lap time; crossing the finish line starts a new lap and wraps the track.
+- **Crash**: Hit obstacles or opponents at high speed to crash; you reset after falling, with brief invulnerability.
+- **Track data**: Default track from `data/track.json`; use `?track=desert` or `?track=iceland` to load other JSON tracks (see [data/README.md](data/README.md)).
 
 ### Controls
 
@@ -32,10 +35,11 @@ You drive a red sports car along an endless track with curves, hills, and two al
 
 ## What This Code Is
 
-- **Single-file game loop**: `game.js` (~870 lines) holds constants, state, audio, track generation, 3D projection, drawing, collision, and the main `update()` loop. No build step, no dependencies.
-- **Fake 3D**: The track is a list of segments (curve, height, sprites). Each segment is projected from 3D world space to 2D screen space with a simple perspective formula; then grass, rumble, and road are drawn as trapezoids. Sprites (trees, buildings, signs, NPC cars) are drawn procedurally with the Canvas 2D API.
-- **Audio**: Engine and crash sounds are generated with the Web Audio API (oscillators, gain, noise buffers). Audio starts after the first key press (browser autoplay rules).
-- **Track**: 2000 segments generated once in `buildRoad()` with fixed curve/hill patterns and alternating nature/city zones. NPC cars are placed randomly and drive along the same road.
+- **Single-file game loop**: `game.js` holds constants, state, audio, track loading/generation, 3D projection, drawing, collision, AI opponents, and the main `update()` loop. No build step, no dependencies.
+- **Fake 3D**: The track is a list of segments (curve, height, sprites). Each segment is projected from 3D to 2D with a simple perspective formula; grass, rumble, and road are drawn as trapezoids. Sprites (trees, buildings, signs) and opponent cars are drawn procedurally with the Canvas 2D API.
+- **Audio**: Engine and crash sounds are generated with the Web Audio API. Audio starts after the first key press (browser autoplay rules).
+- **Track**: Loaded from JSON in `data/` (e.g. `track.json`). Segments define curves, hills, ramps, and zones; opponents and the player share the same arcade physics (curve force, slope, aero, shoulder). Rear-view mirror uses a backward projection over the same segment list.
+- **Code map**: See the file header and section comments in [`game.js`](game.js), and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for a frame-by-frame overview.
 
 ---
 
@@ -97,9 +101,9 @@ Open `http://localhost:8080/run.html`. The image runs as non-root and listens on
 ```
 runningout/
 ├── run.html       # Entry page; canvas + script tag
-├── game.js        # Full game logic, rendering, audio
+├── game.js        # Game logic, rendering, audio, AI opponents
 ├── style.css      # Layout and canvas styling
-├── data/          # Track JSON (e.g. track.json)
+├── data/          # Track JSON (track.json, desert.json, etc.; see data/README.md)
 ├── Dockerfile     # Container image (nginx, port 8080)
 ├── nginx.conf     # Nginx config for container
 ├── serve.sh       # Local server for network access (phone/tablet)

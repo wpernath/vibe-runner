@@ -1,0 +1,13 @@
+.venv/
+.DS_Store
+*.zip
+__pycache__/
+*.pyc
+brand-presentations/
+templates/
+marp-theme.css
+README.txt
+red-hat-template.pptx
+requirements.txt
+SETUP_PRESENTATION_COMPANION.md
+slides.json

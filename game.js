@@ -1,3 +1,30 @@
+/**
+ * =============================================================================
+ * RUNNING OUT – game.js (single-file browser arcade racer)
+ * =============================================================================
+ *
+ * Read this file top to bottom. Rough map:
+ *
+ * | Area                      | Role |
+ * |---------------------------|------|
+ * | Canvas & resize           | Desktop 1024×768 vs mobile fullscreen |
+ * | Constants                 | Physics, gears, collision, ramps, race (RACE_LAPS, NUM_OPPONENTS) |
+ * | Mutable state             | position, speed, playerX/Y, segments[], cars[], lap/HUD, audio nodes |
+ * | Track helpers             | getTrackState, curveForceMagnitude, computeRpm |
+ * | Web Audio                 | playCrashSound, startEngineSound, updateEngineSound |
+ * | Track I/O & build         | loadTrackData, getTerrainY, buildRoad (segments + 10 AI opponents) |
+ * | Projection                | project (forward), projectRear / projectRearByDistance (mirror) |
+ * | Drawing                   | drawQuad, drawRearViewMirror, drawParallaxLayers, drawProceduralSprite |
+ * | HUD                       | drawRPMGauge, drawSpeedGauge, drawTrackOverview, drawTrackMap, drawHUD |
+ * | render()                  | One frame: road loop, sprites, mirror, player car, HUD |
+ * | Collisions & AI           | checkStaticObstacleCollision, crashNPCCar, updateNPCsAndCheckCollision |
+ * | update()                  | Main loop: crash branch, lap/race end, physics, render |
+ * | Boot                      | loadTrackData().then(buildRoad) → requestAnimationFrame(update) |
+ *
+ * Coordinates: `position` = along-track distance (wraps each lap). `playerX` = lateral (~±2.5).
+ * `playerY` = height; `getTrackState(pos).trackElevation` = road height under that position.
+ * =============================================================================
+ */
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 let width = canvas.width;
@@ -34,14 +61,7 @@ if (gameContainer) {
     ro.observe(gameContainer);
 }
 
-/*
- * Struktur: 1) Konstanten & State  2) Audio  3) Input  4) Farben
- *          5) Strecke (buildRoad, project, drawQuad, drawParallaxLayers)
- *          6) Sprites (drawProceduralSprite + Typen)  7) HUD (drawHUD + Gauges)
- *          8) Render  9) Update (Kollision, Physik, Game Loop)  10) Start
- */
-
-// --- Spielvariablen ---
+// --- Player & world state (mutable each frame) ---
 let position = 0;
 let playerX = 0;
 let speed = 0;
@@ -49,11 +69,11 @@ let playerY = 0;
 let playerVelY = 0;
 let skyOffset = 0;
 
-// Crash-Variablen
+// Crash state (spin animation + brief invulnerability after reset)
 let isCrashed = false;
 let crashRot = 0;
 let crashSpinSpeed = 0;
-/** Zeitstempel des letzten Crash-Resets (für Invulnerabilität) */
+/** Timestamp of last crash reset (used for post-crash invulnerability window). */
 let crashResetAt = Date.now();
 
 /** Height above track (world Y) above which we count as in-air (no NPC/static collision). */
@@ -65,18 +85,18 @@ const cameraDepth = 0.84;
 const cameraHeight = 1200;
 const roadWidth = 3000;
 
-// Rampen (Sprungschanzen): sehr langer Anstieg, damit sie in der Perspektive wie Rampen wirken
+// Ramps (jump ramps): long uphill so they read as ramps in perspective
 const RAMP_LAUNCH_VELOCITY = 520;
 /** Gravity per frame when airborne (smaller = longer hang time, arcade feel). */
 const GRAVITY_JUMP = 70;
-/** Beim Landen: Aufprall ab dieser Fallgeschwindigkeit löst einen kleinen Bounce aus. */
+/** Landing impact above this downward velocity triggers a small bounce. */
 const LANDING_BOUNCE_THRESHOLD = 100;
-/** Bounce-Faktor (0–1): Anteil der Aufprallgeschwindigkeit, der zurückfedert. */
+/** Bounce factor (0–1): fraction of impact velocity that rebounds. */
 const LANDING_BOUNCE_FACTOR = 0.38;
 
-// Kollision & Crash-Konstanten
+// Collision & crash tuning
 const CRASH_RESET_GROUND_OFFSET = 100;
-/** Nach Crash-Reset: so viele ms lang keine erneute Crash-Auslösung (verhindert Crash-Loop mit NPCs) */
+/** After crash reset: no new crash trigger for this many ms (avoids NPC crash loops). */
 const CRASH_INVULN_MS = 1800;
 const CRASH_SPEED_THRESHOLD = 50;
 /** Z-range for NPC collision (smaller = only when really close along the road). */
@@ -84,59 +104,56 @@ const COLLISION_Z_RANGE = 140;
 const COLLISION_Z_OFFSET = 300;
 /** Lateral overlap needed to count as hit (smaller = must be closer side-by-side to collide). */
 const COLLISION_PLAYER_CAR_X = 0.18;
-/** Z-Reichweite für Kollision mit statischen Sprites (Bäume, Gebäude, …) */
+/** Z-range for collision with static sprites (trees, buildings, …). */
 const COLLISION_STATIC_Z_RANGE = 280;
 
-// --- Physik-Tuning (alle Werte pro Frame bei 60 fps, dt-skaliert) ---
+// --- Physics (arcade-first: fun over realism; same rules for player and opponents) ---
 const TARGET_FPS = 60;
 
-// Seitenstreifen (progressiv: Grip fällt ab, je weiter man neben der Straße ist)
+// Road shoulders (progressive: grip falls off the farther you are from the lane)
 const ROAD_EDGE = 1.1;
 const SHOULDER_MAX_SPEED = 80;
 const SHOULDER_ACCEL = 0.2;
 const SHOULDER_GRIP_FALLOFF = 1.5;
 
-// Lenkung mit Trägheit (steeringVel interpoliert zum Ziel statt direkter playerX-Änderung)
+// Steering inertia (steeringVel lerps toward target instead of instant playerX)
 const STEERING_FACTOR = 0.032;
 const STEERING_MIN_FACTOR = 0.25;
 const STEERING_ENGAGE_RATE = 0.12;
 const STEERING_RETURN_RATE = 0.08;
 
-// Kurvenfliehkraft (quadratisch: v², gefährlicher bei Highspeed, milder bei Lowspeed)
+// Centrifugal curve force (quadratic in v²; harsher at high speed, milder at low)
 const CURVE_FORCE_DIVISOR = 3_600_000;
 const CURVE_FORCE_SPEED_THRESHOLD = 60;
 /** Max roll angle (rad) for centrifugal lean; scale from curve*speed² to angle. */
 const CURVE_ROLL_MAX = 0.22;
 const CURVE_ROLL_SCALE = 8;
 
-// Handbremse (progressiv: baut sich über ~0.25s auf, löst sich über ~0.17s)
+// Handbrake (progressive: builds over ~0.25s, releases over ~0.17s)
 const HANDBRAKE_STEERING_MUL = 0.26;
 const HANDBRAKE_CURVE_MUL = 1.7;
 const HANDBRAKE_DECEL = 1.5;
 const HANDBRAKE_ENGAGE_RATE = 4.0;
 const HANDBRAKE_RELEASE_RATE = 6.0;
 
-// Bremse (geschwindigkeitsabhängig: bei niedrigem Tempo sanfter, kein Blockieren)
+// Brake (speed-dependent: gentler at low speed, no wheel lock)
 const BRAKE_DECEL = 5.0;
 
-// Motorbremse pro Gang (1. Gang = starke Motorbremse, taktisches Runterschalten vor Kurven)
+// Engine braking per gear (1st = strong; downshift before corners is tactical)
 const GEAR_COAST_DECEL = [1.0, 0.7, 0.5, 0.4, 0.3, 0.2];
 
-// Gang-abhängige Beschleunigung (1. Gang = aggressiv, 6. Gang = schwach)
+// Acceleration per gear (1st aggressive, 6th weak)
 const GEAR_ACCEL_RATES = [1.4, 1.1, 0.85, 0.65, 0.5, 0.35];
 
-// Redline-Begrenzer: ab 6200 RPM fällt die Beschleunigung ab, bei 7000 RPM = 0
+// Redline limiter: accel drops from 6200 RPM, zero at 7000 RPM
 const REDLINE_DROPOFF_START = 6200;
 
-// Aerodynamischer Luftwiderstand (quadratisch: bremst bei Highspeed natürlich ab)
+// Aerodynamic drag (quadratic; naturally caps top speed)
 const AERO_DRAG = 0.000006;
 
-// Kontrolle in der Luft: stark reduziert
-const AIR_STEERING_MUL = 0.1;
-const AIR_THROTTLE_MUL = 0.0;
-const AIR_BRAKE_MUL = 0.0;
+// In air: speed preserved, steering frozen
 
-// Geschwindigkeitsverlust bei harter Landung (proportional zu Aufprallgeschwindigkeit)
+// Speed loss on hard landing (proportional to impact velocity)
 const LANDING_SPEED_LOSS_FACTOR = 0.0004;
 
 // Pitch in air (up/down keys): mild effect so jump arc stays predictable and arcade-like
@@ -147,38 +164,43 @@ const PITCH_DOWN_GRAVITY_MUL = 1.35;
 const CLEAN_LANDING_MAX_VEL = 80;
 const CLEAN_LANDING_BOOST = 10;
 
-// NPC-Sprungphysik
+// NPCs (same jump gravity as player)
 const NPC_RAMP_LAUNCH_FACTOR = 0.65;
-const NPC_AIR_GRAVITY = 65;
+/** Opponents stay on the drivable road (lateral clamp). */
+const NPC_ROAD_OFFSET_MAX = 0.95;
+const NPC_CENTERING_RATE = 0.04;
 
-// Hangabtriebskraft: Schwerkraft entlang der Steigung (positiv = bergauf bremst, negativ = bergab beschleunigt)
+// Slope gravity along road (positive = uphill slows, negative = downhill accelerates)
 const SLOPE_GRAVITY_FACTOR = 0.55;
 
-// --- Getriebe (manuell) ---
+// --- Manual gearbox ---
 const NUM_GEARS = 6;
-/** Maximalgeschwindigkeit pro Gang (nur im höchsten Gang wird maxSpeed erreicht) */
+/** Max speed per gear (only top gear reaches global maxSpeed). */
 const GEAR_MAX_SPEEDS = [45, 90, 135, 180, 215, 250];
-/** Unterhalb dieser Geschwindigkeit (km/h) im jeweiligen Gang nur stark reduzierte Beschleunigung („nicht anfahren“) */
+/** Below this km/h in each gear, acceleration is heavily reduced (“won’t pull”). */
 const GEAR_MIN_SPEEDS = [0, 18, 38, 58, 85, 115];
 const RPM_REDLINE = 7000;
 const RPM_IDLE = 800;
-/** Beim Sprung (ohne Crash): RPM-Anzeige und Sound drehen so hoch („aufdingsen“). */
+/** While airborne (no crash): RPM display and engine sound spike (“rev hang”). */
 const RPM_IN_AIR = 6400;
 
 let currentGear = 1;
 let lastTimestamp = 0;
 let steeringVel = 0;
 let handbrakeAmount = 0;
+/** Hysteresis: stay “in air” until clearly grounded (avoids flicker at threshold). */
+let wasInAirPreviousFrame = false;
 
 let segments = [];
 let cars = [];
 
-// --- Hilfsfunktionen für Strecke & Antrieb ---
+// --- Track & drivetrain helpers ---
 
 /**
- * Liefert den Streckenzustand an einer gegebenen Position (Segment, Höhe, Kurve).
- * @param {number} pos - Aktuelle Position auf der Strecke (Welt-Einheiten).
- * @returns {{ startSegIndex: number, offset: number, baseSeg: object, nextSeg: object, trackElevation: number }} Segment-Index, Offset im Segment, aktuelle/naechstes Segment, interpolierte Straßenhöhe.
+ * Track state at a distance along the road: current segment, next segment, interpolated road height.
+ * Used by physics, rendering, and collision.
+ * @param {number} pos - Distance along track (world units).
+ * @returns {{ startSegIndex: number, offset: number, baseSeg: object, nextSeg: object, trackElevation: number }}
  */
 function getTrackState(pos) {
     const startSegIndex = Math.floor(pos / segmentLength) % segments.length;
@@ -189,11 +211,19 @@ function getTrackState(pos) {
     return { startSegIndex, offset, baseSeg, nextSeg, trackElevation };
 }
 
+/** Shared centrifugal (curve) force for player and NPCs; lateral push per frame. */
+function curveForceMagnitude(curve, speedKmh, handbrakeMul) {
+    if (speedKmh <= 0) return 0;
+    let f = (curve * speedKmh * speedKmh) / CURVE_FORCE_DIVISOR;
+    if (speedKmh < CURVE_FORCE_SPEED_THRESHOLD) f *= speedKmh / CURVE_FORCE_SPEED_THRESHOLD;
+    return f * (handbrakeMul || 1);
+}
+
 /**
- * Berechnet die Motordrehzahl (RPM) aus Geschwindigkeit und Gang.
- * @param {number} speedKmh - Geschwindigkeit in km/h.
- * @param {number} gear - Aktueller Gang (1..NUM_GEARS).
- * @returns {number} Drehzahl (RPM_IDLE .. RPM_REDLINE).
+ * Engine RPM from speed and gear (linear map per gear max speed).
+ * @param {number} speedKmh - Speed in km/h.
+ * @param {number} gear - Current gear (1..NUM_GEARS).
+ * @returns {number} RPM in [RPM_IDLE, RPM_REDLINE].
  */
 function computeRpm(speedKmh, gear) {
     const gearMax = GEAR_MAX_SPEEDS[gear - 1];
@@ -204,15 +234,29 @@ function computeRpm(speedKmh, gear) {
     );
 }
 
-// --- HUD & UI Variablen ---
+// --- HUD & UI state ---
 let currentLap = 1;
 let currentLapTime = 0;
 let lastLapTime = 0;
 let lapStartTime = Date.now();
 
+// --- Race & opponents (first to 3 laps wins) ---
+const RACE_LAPS = 3;
+const NUM_OPPONENTS = 10;
+let raceOver = false;
+let raceWinner = null;
+let raceWinnerName = null;
+let raceStartTime = 0;
+let countdownActive = true;
+let countdownEnd = 0;
+const COUNTDOWN_DURATION = 3;
+const playerSpeedSamples = [];
+const PLAYER_SPEED_SAMPLES_MAX = 90;
+let playerAvgSpeed = 110;
+
 let keys = { ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false, ShiftLeft: false };
 
-// --- Motorsound (Web Audio API, prozedural) ---
+// --- Engine sound (Web Audio API, procedural) ---
 let engineSoundReady = false;
 let audioContext = null;
 let engineGainNode = null;
@@ -221,8 +265,7 @@ let engineOsc2 = null;
 let engineFilter = null;
 
 /**
- * Spielt einen prozeduralen Crash-Sound ueber die Web Audio API ab
- * (Rauschen, tiefes Boom, Crunch). Wird bei Kollision mit Hindernissen oder NPCs aufgerufen.
+ * One-shot procedural crash SFX (noise, low thud, crunch). Called on obstacle/NPC collisions.
  */
 function playCrashSound() {
     try {
@@ -239,7 +282,7 @@ function playCrashSound() {
         gainNode.gain.exponentialRampToValueAtTime(0.001, t0 + duration);
         gainNode.connect(ctx.destination);
 
-        // Rausch-Impact (länger, voller)
+        // Noise impact (longer, fuller)
         const noiseDuration = 0.22;
         const bufferSize = ctx.sampleRate * noiseDuration;
         const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
@@ -257,7 +300,7 @@ function playCrashSound() {
         noise.start(t0);
         noise.stop(t0 + noiseDuration);
 
-        // Tiefes „Boom“-Fundament
+        // Low “boom” foundation
         const thud = ctx.createOscillator();
         thud.type = 'sine';
         thud.frequency.setValueAtTime(90, t0);
@@ -266,7 +309,7 @@ function playCrashSound() {
         thud.start(t0);
         thud.stop(t0 + 0.28);
 
-        // Zweiter tiefer Ton für mehr Druck
+        // Second low tone for weight
         const thud2 = ctx.createOscillator();
         thud2.type = 'sine';
         thud2.frequency.setValueAtTime(55, t0);
@@ -279,7 +322,7 @@ function playCrashSound() {
         thud2.start(t0);
         thud2.stop(t0 + 0.25);
 
-        // Kurzer „Crunch“ im Mittelfrequenzbereich
+        // Short mid-frequency “crunch”
         const crunch = ctx.createOscillator();
         crunch.type = 'sawtooth';
         crunch.frequency.setValueAtTime(180, t0);
@@ -295,8 +338,8 @@ function playCrashSound() {
 }
 
 /**
- * Initialisiert den Motorsound (AudioContext, Oszillatoren, Filter).
- * Wird beim ersten Tastendruck aufgerufen (Browser-Autoplay). Idempotent.
+ * Initializes engine sound (AudioContext, oscillators, filter).
+ * Called on first key/touch (browser autoplay policy). Idempotent.
  */
 function startEngineSound() {
     if (engineSoundReady) return;
@@ -339,9 +382,9 @@ function startEngineSound() {
 }
 
 /**
- * Aktualisiert Frequenz und Lautstaerke des Motorsounds anhand von Drehzahl und Gas.
- * @param {number} rpm - Aktuelle Motordrehzahl.
- * @param {number} throttle - Gaspedal 0..1 (z.B. 1 bei Pfeil hoch, 0 bei kein Gas).
+ * Updates engine oscillator frequencies and gain from RPM and throttle.
+ * @param {number} rpm - Current engine RPM.
+ * @param {number} throttle - Throttle 0..1 (e.g. 1 when ArrowUp held).
  */
 function updateEngineSound(rpm, throttle) {
     if (!engineSoundReady || !engineGainNode || !engineOsc1 || !engineOsc2) return;
@@ -423,6 +466,7 @@ document.addEventListener('contextmenu', e => {
     if (e.target.closest('#touchControls')) e.preventDefault();
 }, true);
 
+// --- Road/grass/rumble palette per biome (zones in track JSON) ---
 const COLORS = {
     DARK: { road: '#5b5b5b', grass: '#10AA10', rumble: '#555' },
     LIGHT: { road: '#696969', grass: '#009A00', rumble: '#FFF' },
@@ -440,11 +484,11 @@ const COLORS = {
     CLOUD: 'rgba(255, 255, 255, 0.3)'
 };
 
-// --- Strecke generieren ---
+// --- Track generation & loading ---
 
 /**
- * Liefert die eingebaute Standard-Streckendefinition (wird verwendet, wenn data/track.json fehlt).
- * @returns {object} Strecken-JSON (segmentCount, curves, hills, ramps, zones, startSegmentCount).
+ * Built-in default track JSON (used when data/track.json fails to load).
+ * @returns {object} Track definition: segmentCount, curves, hills, ramps, zones, startSegmentCount.
  */
 function getDefaultTrack() {
     return {
@@ -478,9 +522,8 @@ function getDefaultTrack() {
 }
 
 /**
- * Lädt Streckendaten aus dem data-Verzeichnis (data/track.json).
- * Optional: ?track=dateiname lädt data/dateiname.json (ohne .json).
- * @returns {Promise<object|null>} Parsed JSON oder null bei Fehler.
+ * Loads track JSON from `data/track.json`, or `data/<name>.json` when URL has `?track=<name>`.
+ * @returns {Promise<object|null>} Parsed track object or null on error.
  */
 function loadTrackData() {
     const params = new URLSearchParams(document.location.search);
@@ -491,7 +534,7 @@ function loadTrackData() {
         .catch(() => null);
 }
 
-/** Terrain-Höhe ohne Rampen (nur Hügel). Für weiche Übergänge nach Rampen-Landung. */
+/** Terrain height from hills only (no ramps). Used for smooth transitions after ramp landings. */
 function getTerrainY(n, hills) {
     if (!hills || !hills.length) return 0;
     let y = 0;
@@ -505,9 +548,9 @@ function getTerrainY(n, hills) {
 }
 
 /**
- * Baut die komplette Strecke aus Streckendaten (JSON) und platziert NPC-Autos.
- * Fuellt die globalen Arrays `segments` und `cars`. Wird mit loadTrackData() geladenen Daten oder getDefaultTrack() aufgerufen.
- * @param {object} trackData - Streckendefinition: segmentCount, curves[], hills[], ramps[], zones[], startSegmentCount.
+ * Builds the full track from JSON and spawns opponent cars.
+ * Fills globals `segments` and `cars`. Called with data from loadTrackData() or getDefaultTrack().
+ * @param {object} trackData - segmentCount, curves[], hills[], ramps[], zones[], startSegmentCount.
  */
 function buildRoad(trackData) {
     if (!trackData) trackData = getDefaultTrack();
@@ -637,7 +680,6 @@ function buildRoad(trackData) {
         }
 
         segments.push({
-            z: n * segmentLength,
             y: y,
             curve: curve,
             sprites: segmentSprites,
@@ -648,7 +690,7 @@ function buildRoad(trackData) {
         });
     }
 
-    // Rundkurs schließen: Summe aller Kurven = 0, damit Start = Ziel
+    // Close the loop: net curve sum = 0 so start meets finish geometrically
     let totalCurve = 0;
     for (let i = 0; i < segments.length; i++) totalCurve += segments[i].curve;
     if (segments.length > 0 && Math.abs(totalCurve) > 1e-6) {
@@ -657,19 +699,28 @@ function buildRoad(trackData) {
     }
 
     const trackLength = segmentCount * segmentLength;
+    raceOver = false;
+    raceWinner = null;
+    raceWinnerName = null;
+    raceStartTime = Date.now();
+    countdownActive = true;
+    countdownEnd = Date.now() + COUNTDOWN_DURATION * 1000;
     cars = [];
-    for (let i = 0; i < 100; i++) {
-        const isOncoming = i >= 80;
-        const dir = isOncoming ? -1 : 1;
-        const offset = isOncoming
-            ? -(0.25 + Math.random() * 0.4)
-            : 0.25 + Math.random() * 0.6;
+    const opponentColors = ['#2266dd', '#dd6622', '#22aa44', '#aa22aa', '#ddcc22', '#22cccc', '#cc4422', '#6688dd', '#88dd66', '#dd88aa'];
+    const baseTargetSpeed = Math.min(maxSpeed * 0.92, 200);
+    for (let i = 0; i < NUM_OPPONENTS; i++) {
+        const speedFactor = 0.86 + (i / (NUM_OPPONENTS - 1 || 1)) * 0.18;
         cars.push({
-            z: Math.random() * trackLength,
-            offset: offset,
-            speed: isOncoming ? 60 + Math.random() * 80 : 40 + Math.random() * 60,
-            dir: dir,
-            color: `hsl(${Math.floor(Math.random() * 360)}, 80%, 50%)`,
+            z: i * 280,
+            offset: -0.5 + (i % 5) * 0.25,
+            speed: 0,
+            dir: 1,
+            lap: 0,
+            name: String(i + 1),
+            color: opponentColors[i % opponentColors.length],
+            targetSpeedFactor: speedFactor,
+            startDelay: i * 0.25,
+            npcGear: 1,
             crashed: false,
             crashRot: 0,
             crashSpin: 0,
@@ -678,23 +729,24 @@ function buildRoad(trackData) {
             crashY: 0,
             crashVelY: 0,
             crashTimer: 0,
-            originalSpeed: 0,
+            originalSpeed: baseTargetSpeed * speedFactor,
             airY: 0,
             airVelY: 0
         });
     }
 }
 
+// --- 3D → 2D projection (forward view + road quads) ---
+
 /**
- * Projiziert einen 3D-Punkt in 2D-Bildschirmkoordinaten (perspektivisch).
- * Schreibt in das uebergebene Objekt p die Eigenschaften x, y, w (Halbe Breite der Strasse in Pixeln).
- * @param {{ x: number, y: number, w: number }} p - Objekt, das mit x, y, w befuellt wird.
- * @param {number} worldX - X in Weltkoordinaten (quer zur Fahrtrichtung).
- * @param {number} worldY - Y (Hoehe).
- * @param {number} worldZ - Z (Fahrtrichtung).
- * @param {number} camX - Kamera X.
- * @param {number} camY - Kamera Y.
- * @param {number} camZ - Kamera Z.
+ * Perspective projection of a world point to screen. Writes `p.x`, `p.y`, `p.w` (half road width in px).
+ * @param {{ x: number, y: number, w: number }} p - Output object.
+ * @param {number} worldX - Lateral (across road).
+ * @param {number} worldY - Height.
+ * @param {number} worldZ - Along track (forward).
+ * @param {number} camX - Camera X.
+ * @param {number} camY - Camera Y.
+ * @param {number} camZ - Camera Z.
  */
 function project(p, worldX, worldY, worldZ, camX, camY, camZ) {
     let z = Math.max(1, worldZ - camZ);
@@ -727,14 +779,10 @@ function projectRearByDistance(p, worldX, worldY, zBehind, camX, camY, centerX, 
 }
 
 /**
- * Zeichnet ein Trapez (Quad) als Strasse/Rand-Band zwischen zwei projizierten Querschnitten.
- * @param {string} color - Fuellfarbe (z.B. aus COLORS.road, COLORS.rumble).
- * @param {number} x1 - Linke/rechte Bildschirm-X des vorderen Querschnitts.
- * @param {number} y1 - Bildschirm-Y des vorderen Querschnitts.
- * @param {number} w1 - Halbe Breite des vorderen Querschnitts (Pixel).
- * @param {number} x2 - X des hinteren Querschnitts.
- * @param {number} y2 - Y des hinteren Querschnitts.
- * @param {number} w2 - Halbe Breite des hinteren Querschnitts.
+ * Fills a trapezoid between two projected road cross-sections (road or rumble stripe).
+ * @param {string} color - Fill (e.g. seg.color.road, seg.color.rumble).
+ * @param {number} x1, y1, w1 - Near cross-section center X/Y and half-width (px).
+ * @param {number} x2, y2, w2 - Far cross-section.
  */
 function drawQuad(color, x1, y1, w1, x2, y2, w2) {
     ctx.fillStyle = color; ctx.beginPath();
@@ -857,8 +905,8 @@ function drawRearViewMirror(startSegIndex, camX, camY, camZ) {
 }
 
 /**
- * Zeichnet Himmel, Wolken und Berge als Parallax-Hintergrund.
- * @param {number} horizonY - Bildschirm-Y der Horizontlinie.
+ * Sky gradient, clouds, and parallax mountains above the horizon line.
+ * @param {number} horizonY - Screen Y of the horizon.
  */
 let _cachedSkyGradient = null;
 let _cachedSkyH = 0;
@@ -902,14 +950,15 @@ function drawParallaxLayers(horizonY) {
     ctx.lineTo(width, height); ctx.fill();
 }
 
+// --- Procedural sprites (trees, buildings, signs, NPC cars) ---
+
 /**
- * Zeichnet ein prozedurales Sprite (Baum, Gebaeude, Laterne, Schild, NPC-Auto) an der projizierten Position.
- * Schneidet mit clipY, damit Objekte nicht ueber naehere Strasse gezeichnet werden.
- * @param {{ type: string, data?: object }} spriteObj - Typ (z.B. 'TREE_PINE', 'BUILDING', 'NPC_CAR') und optionale Daten.
- * @param {number} destX - Ziel-X auf dem Canvas (Mitte des Sprites).
- * @param {number} destY - Ziel-Y (Fusslinie).
- * @param {number} destW - Projizierte Breite (fuer Skalierung).
- * @param {number} clipY - Maximale Y-Koordinate (Clip-Rechteck).
+ * Draws a procedural sprite at projected screen position. Clips to `clipY` so nearer road draws on top.
+ * @param {{ type: string, data?: object }} spriteObj - e.g. 'TREE_PINE', 'BUILDING', 'NPC_CAR'.
+ * @param {number} destX - Sprite center X.
+ * @param {number} destY - Baseline Y (ground contact).
+ * @param {number} destW - Projected width (scale).
+ * @param {number} clipY - Bottom of clip rect (depth ordering).
  */
 function drawProceduralSprite(spriteObj, destX, destY, destW, clipY) {
     let s = destW * 0.001;
@@ -1013,10 +1062,11 @@ function drawProceduralSprite(spriteObj, destX, destY, destW, clipY) {
     ctx.restore();
 }
 
+// --- HUD gauges & minimap ---
+
 /**
- * Zeichnet den analogen Drehzahlmesser (RPM-Gauge) links neben dem Tacho.
- * Zeigt aktuelle Drehzahl, Redline-Bereich und aktuellen Gang.
- * @param {number} rpm - Anzuzeigende Motordrehzahl.
+ * Analog RPM gauge (left of speedo): needle, redline arc, current gear digit.
+ * @param {number} rpm - RPM to display.
  */
 function drawRPMGauge(rpm) {
     const cx = width - 15 - 165 - 10 - 165 / 2, cy = 52, r = 42, boxW = 165, left = width - 15 - boxW * 2 - 10;
@@ -1046,8 +1096,8 @@ function drawRPMGauge(rpm) {
 }
 
 /**
- * Zeichnet den analogen Tacho (Geschwindigkeitsanzeige) rechts oben.
- * @param {number} speedKmh - Anzuzeigende Geschwindigkeit in km/h.
+ * Analog speedometer (top right).
+ * @param {number} speedKmh - Speed in km/h.
  */
 function drawSpeedGauge(speedKmh) {
     const cx = width - 92, cy = 52, r = 42, boxW = 165, left = width - 15 - boxW;
@@ -1074,8 +1124,7 @@ function drawSpeedGauge(speedKmh) {
 }
 
 /**
- * Zeichnet eine kompakte Streckenübersicht: Start/Ziel und aktueller Streckenstand.
- * Kleiner Fortschrittsbalken links unten.
+ * Compact lap progress bar (bottom left): start/finish marker and player dot.
  */
 function drawTrackOverview() {
     if (!segments.length) return;
@@ -1094,7 +1143,7 @@ function drawTrackOverview() {
     ctx.lineWidth = 1;
     ctx.strokeRect(x, y, barW, barH);
 
-    // Start/Ziel links
+    // Start/finish marker (left of bar)
     ctx.fillStyle = '#FFF';
     ctx.font = 'bold 9px "Courier New", monospace';
     ctx.textAlign = 'left';
@@ -1103,7 +1152,7 @@ function drawTrackOverview() {
     ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
     ctx.fillRect(x + 22, y + 2, 2, barH - 4);
 
-    // Aktuelle Position (Punkt)
+    // Player position dot
     const px = x + 26 + (barW - 34) * progress;
     ctx.fillStyle = '#e62222';
     ctx.beginPath();
@@ -1117,8 +1166,7 @@ function drawTrackOverview() {
 }
 
 /**
- * Zeichnet eine Übersichtskarte (Minimap): Streckenverlauf von oben und aktuelle Spielerposition.
- * Rechts unten, kompakt.
+ * Minimap (bottom right): top-down track polyline and player position.
  */
 function drawTrackMap() {
     if (!segments.length) return;
@@ -1195,22 +1243,73 @@ function drawTrackMap() {
 }
 
 /**
- * Zeichnet das komplette HUD: Lap/Zeit-Box, RPM-Gauge, Tacho, Streckenübersicht, bei Crash den "CRASHED!"-Overlay.
- * @param {number} [displayRpm] - Anzuzeigende Drehzahl (optional; sonst aus speed/Gang berechnet).
+ * Full HUD: lap/time/position box, RPM, speedo, progress bar, minimap; race-over screen; crash banner.
+ * @param {number} [displayRpm] - Override RPM (e.g. RPM_IN_AIR when jumping); else from speed/gear.
  */
 function drawHUD(displayRpm) {
     const rpm = displayRpm != null ? displayRpm : computeRpm(speed, currentGear);
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.6)'; ctx.fillRect(15, 15, 200, 90);
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.6)'; ctx.fillRect(15, 15, 200, 112);
     drawRPMGauge(rpm);
     drawSpeedGauge(speed);
 
-    // Lap, Zeit
+    // Lap, race position, times
+    let playerPosition = 1;
+    if (segments.length && cars.length) {
+        const trackLen = segments.length * segmentLength;
+        const playerZ = position % trackLen;
+        const entries = [{ lap: currentLap - 1, z: playerZ, isPlayer: true }];
+        for (let i = 0; i < cars.length; i++) {
+            entries.push({ lap: cars[i].lap, z: cars[i].z, isPlayer: false });
+        }
+        entries.sort((a, b) => { if (a.lap !== b.lap) return b.lap - a.lap; return b.z - a.z; });
+        const idx = entries.findIndex(e => e.isPlayer);
+        if (idx >= 0) playerPosition = idx + 1;
+    }
+    const totalRacers = 1 + (cars.length || 0);
     ctx.fillStyle = '#FFF'; ctx.font = 'bold 20px "Courier New"'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
-    ctx.fillText(`LAP:  ${currentLap}`, 25, 40); ctx.fillText(`TIME: ${currentLapTime.toFixed(2)}s`, 25, 65);
-    if (lastLapTime > 0) { ctx.fillStyle = '#AAA'; ctx.fillText(`LAST: ${lastLapTime.toFixed(2)}s`, 25, 90); }
+    ctx.fillText(`LAP:  ${currentLap}/${RACE_LAPS}`, 25, 40);
+    ctx.fillText(`POS:  ${playerPosition}/${totalRacers}`, 25, 58);
+    ctx.fillText(`TIME: ${currentLapTime.toFixed(2)}s`, 25, 78);
+    if (lastLapTime > 0) { ctx.fillStyle = '#AAA'; ctx.fillText(`LAST: ${lastLapTime.toFixed(2)}s`, 25, 103); }
+    ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.font = 'bold 12px "Courier New"'; ctx.fillText('First to 3 laps wins', 25, 121);
 
     drawTrackOverview();
     drawTrackMap();
+
+    if (raceOver) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+        ctx.fillRect(0, 0, width, height);
+        ctx.fillStyle = '#FFF';
+        ctx.textAlign = 'center';
+        ctx.font = 'bold 48px "Courier New"';
+        if (raceWinner === 'player') {
+            ctx.fillStyle = '#4a4';
+            ctx.fillText('YOU WIN!', width / 2, height / 2 - 20);
+            ctx.fillStyle = '#FFF'; ctx.font = 'bold 24px "Courier New"';
+            ctx.fillText('First to 3 laps', width / 2, height / 2 + 30);
+        } else {
+            ctx.fillStyle = '#c44';
+            ctx.fillText(`OPPONENT ${raceWinnerName} WINS!`, width / 2, height / 2 - 20);
+            ctx.fillStyle = '#FFF'; ctx.font = 'bold 24px "Courier New"';
+            ctx.fillText('First to 3 laps', width / 2, height / 2 + 30);
+        }
+    }
+
+    if (countdownActive) {
+        const remaining = (countdownEnd - Date.now()) / 1000;
+        const displayNum = Math.ceil(Math.max(0, remaining));
+        const label = displayNum > 0 ? String(displayNum) : 'GO!';
+        const pulse = 1 + Math.sin(remaining * Math.PI * 2) * 0.15;
+        ctx.save();
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+        ctx.fillRect(0, 0, width, height);
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = `bold ${Math.round(96 * pulse)}px "Courier New"`;
+        ctx.fillStyle = displayNum > 0 ? '#FFF' : '#4f4';
+        ctx.fillText(label, width / 2, height / 2);
+        ctx.restore();
+    }
 
     if (isCrashed) {
         ctx.fillStyle = 'rgba(255, 0, 0, 0.7)';
@@ -1222,9 +1321,25 @@ function drawHUD(displayRpm) {
     }
 }
 
+// --- Sprite draw pool (avoids per-frame allocation) ---
+const _spritePool = [];
+let _spriteCount = 0;
+
+function _pushSprite(type, data, x, y, w, clipY) {
+    if (_spriteCount < _spritePool.length) {
+        const s = _spritePool[_spriteCount];
+        s.type = type; s.data = data; s.x = x; s.y = y; s.w = w; s.clipY = clipY;
+    } else {
+        _spritePool.push({ type, data, x, y, w, clipY });
+    }
+    _spriteCount++;
+}
+
+// --- Main frame render ---
+
 /**
- * Zeichnet einen kompletten Frame: Strasse (mit Kurven/Hoehe), Sprites, Spielerauto, HUD.
- * Verwendet getTrackState(position) und projiziert die naechsten 300 Segmente.
+ * One full frame: parallax, ~300 road segments (curve + height), sprites, rear mirror, player car, HUD.
+ * Camera from getTrackState(position); sorts sprites back-to-front via clipY.
  */
 function render() {
     ctx.clearRect(0, 0, width, height);
@@ -1238,7 +1353,7 @@ function render() {
     drawParallaxLayers(horizonY);
 
     let x = 0, dx = 0, maxY = height;
-    let spritesToDraw = [];
+    _spriteCount = 0;
 
     const _projTmp = { x: 0, y: 0, w: 0 };
 
@@ -1253,7 +1368,7 @@ function render() {
         for (let i = 0; i < seg.sprites.length; i++) {
             project(_projTmp, currentCurveX + seg.sprites[i].offset * roadWidth, seg.y, segZ, camX, camY, camZ - (n === 0 ? offset : 0));
             if (_projTmp.x > -1000 && _projTmp.x < width + 1000) {
-                spritesToDraw.push({ type: seg.sprites[i].type, data: seg.sprites[i].data, x: _projTmp.x, y: _projTmp.y, w: _projTmp.w, clipY: maxY });
+                _pushSprite(seg.sprites[i].type, seg.sprites[i].data, _projTmp.x, _projTmp.y, _projTmp.w, maxY);
             }
         }
 
@@ -1263,7 +1378,7 @@ function render() {
             project(_projTmp, currentCurveX + car.offset * roadWidth, seg.y, carVisualZ, camX, camY, camZ - (n === 0 ? offset : 0));
 
             if (_projTmp.x > -1000 && _projTmp.x < width + 1000) {
-                spritesToDraw.push({ type: 'NPC_CAR', data: car, x: _projTmp.x, y: _projTmp.y, w: _projTmp.w, clipY: maxY });
+                _pushSprite('NPC_CAR', car, _projTmp.x, _projTmp.y, _projTmp.w, maxY);
             }
         }
 
@@ -1273,12 +1388,22 @@ function render() {
             ctx.fillStyle = seg.color.grass; ctx.fillRect(0, seg.p1.y, width, prev.p1.y - seg.p1.y);
             drawQuad(seg.color.rumble, prev.p1.x, prev.p1.y, prev.p1.w * 1.1, seg.p1.x, seg.p1.y, seg.p1.w * 1.1);
             drawQuad(seg.color.road, prev.p1.x, prev.p1.y, prev.p1.w, seg.p1.x, seg.p1.y, seg.p1.w);
+
+            const segIdx = (startSegIndex + n) % segments.length;
+            if (Math.floor(segIdx / 4) % 2 === 0) {
+                const laneW1 = prev.p1.w * 0.012;
+                const laneW2 = seg.p1.w * 0.012;
+                drawQuad('#ddd', prev.p1.x, prev.p1.y, laneW1, seg.p1.x, seg.p1.y, laneW2);
+                drawQuad('#ddd', prev.p1.x - prev.p1.w * 0.5, prev.p1.y, laneW1, seg.p1.x - seg.p1.w * 0.5, seg.p1.y, laneW2);
+                drawQuad('#ddd', prev.p1.x + prev.p1.w * 0.5, prev.p1.y, laneW1, seg.p1.x + seg.p1.w * 0.5, seg.p1.y, laneW2);
+            }
         }
         maxY = seg.p1.y;
     }
 
-    for (let i = spritesToDraw.length - 1; i >= 0; i--) {
-        drawProceduralSprite(spritesToDraw[i], spritesToDraw[i].x, spritesToDraw[i].y, spritesToDraw[i].w, spritesToDraw[i].clipY);
+    for (let i = _spriteCount - 1; i >= 0; i--) {
+        const s = _spritePool[i];
+        drawProceduralSprite(s, s.x, s.y, s.w, s.clipY);
     }
 
     drawRearViewMirror(startSegIndex, camX, camY, camZ);
@@ -1290,22 +1415,24 @@ function render() {
 
     const onShoulder = Math.abs(playerX) > ROAD_EDGE && !isCrashed;
 
+    const _now = performance.now();
+    const bounce = (speed > 0 && jumpHeight === 0 && !isCrashed)
+        ? Math.sin(_now * 0.012) * 1.2 + Math.sin(_now * 0.029) * 0.6
+        : 0;
+
     ctx.save();
     if (onShoulder && speed > 0 && jumpHeight === 0) {
-        const t = performance.now();
-        const jitterX = Math.sin(t * 0.047) * 3 + Math.sin(t * 0.113) * 2;
-        const jitterY = Math.sin(t * 0.073) * 1.5 + Math.sin(t * 0.157) * 1;
+        const jitterX = Math.sin(_now * 0.047) * 3 + Math.sin(_now * 0.113) * 2;
+        const jitterY = Math.sin(_now * 0.073) * 1.5 + Math.sin(_now * 0.157) * 1;
         ctx.translate(jitterX, jitterY);
     }
-    // Centrifugal lean: tighter/faster curve = stronger roll (only on ground)
-    if (!isCrashed && jumpHeight === 0 && speed > 0) {
-        let curveForceVisual = (baseSeg.curve * speed * speed) / CURVE_FORCE_DIVISOR;
-        if (speed < CURVE_FORCE_SPEED_THRESHOLD) curveForceVisual *= speed / CURVE_FORCE_SPEED_THRESHOLD;
-        curveForceVisual *= (1 + handbrakeAmount * (HANDBRAKE_CURVE_MUL - 1));
-        const rollAngle = Math.max(-CURVE_ROLL_MAX, Math.min(CURVE_ROLL_MAX, curveForceVisual * CURVE_ROLL_SCALE));
+    const onGroundForRoll = jumpHeight < 12;
+    if (!isCrashed && onGroundForRoll && speed > 0) {
+        const handbrakeMul = 1 + handbrakeAmount * (HANDBRAKE_CURVE_MUL - 1);
+        const rollAngle = Math.max(-CURVE_ROLL_MAX, Math.min(CURVE_ROLL_MAX, curveForceMagnitude(baseSeg.curve, speed, handbrakeMul) * CURVE_ROLL_SCALE));
         if (Math.abs(rollAngle) > 0.008) {
             const cx = carX + carW / 2;
-            const cy = height - carH - 20 + (speed > 0 && !isCrashed ? Math.sin(performance.now() * 0.012) * 1.2 + Math.sin(performance.now() * 0.029) * 0.6 : 0) - (jumpHeight * 0.015) + carH / 2;
+            const cy = height - carH - 20 + bounce - (jumpHeight * 0.015) + carH / 2;
             ctx.translate(cx, cy);
             ctx.rotate(rollAngle);
             ctx.translate(-cx, -cy);
@@ -1321,16 +1448,14 @@ function render() {
         let pitchAngle = 0;
         if (keys.ArrowUp) pitchAngle = -0.12;
         else if (keys.ArrowDown) pitchAngle = 0.15;
-        if (pitchAngle !== 0) {
-            let cx = carX + carW / 2;
-            let cy = height - carH - 20 - jumpHeight * 0.015 + carH / 2;
-            ctx.translate(cx, cy);
-            ctx.rotate(pitchAngle);
-            ctx.translate(-cx, -cy);
-        }
+        const roadRollInAir = baseSeg.curve * 0.012;
+        const cx = carX + carW / 2;
+        const cy = height - carH - 20 - jumpHeight * 0.015 + carH / 2;
+        ctx.translate(cx, cy);
+        if (pitchAngle !== 0) ctx.rotate(pitchAngle);
+        ctx.rotate(roadRollInAir);
+        ctx.translate(-cx, -cy);
     }
-
-    const bounce = (speed > 0 && jumpHeight === 0 && !isCrashed) ? Math.sin(performance.now() * 0.012) * 1.2 + Math.sin(performance.now() * 0.029) * 0.6 : 0;
     const carY = height - carH - 20 + bounce - (jumpHeight * 0.015);
 
     if (jumpHeight > 0 && !isCrashed) {
@@ -1344,15 +1469,16 @@ function render() {
 
     ctx.restore();
 
-    const inAirForHUD = !isCrashed && (playerY - trackElevation > 60);
+    const inAirForHUD = !isCrashed && (playerY - trackElevation > IN_AIR_THRESHOLD);
     drawHUD(inAirForHUD ? RPM_IN_AIR : undefined);
 }
 
+// --- Collisions & opponent AI ---
+
 /**
- * Prueft Kollision mit statischen Hindernissen (Baeume, Gebaeude, Laternen, Schilder).
- * Nur am Boden (nicht in der Luft) und ausserhalb der Crash-Invulnerabilitaet.
- * Setzt bei Treffer isCrashed/playCrashSound oder stoppt die Geschwindigkeit.
- * @param {{ startSegIndex: number, baseSeg: object, nextSeg: object, trackElevation: number }} trackState - Aktueller Streckenzustand von getTrackState().
+ * Static obstacle hits (trees, buildings, lights, signs). Only on ground; skips post-crash invuln window.
+ * High speed → crash + spin; low speed → speed zeroed.
+ * @param {{ startSegIndex: number, baseSeg: object, nextSeg: object, trackElevation: number }} trackState - From getTrackState().
  */
 function checkStaticObstacleCollision(trackState) {
     const inAir = playerY > trackState.trackElevation + IN_AIR_THRESHOLD || playerVelY > 25;
@@ -1388,6 +1514,7 @@ const NPC_CRASH_DURATION = 180;
 const NPC_CRASH_GRAVITY = 6;
 const NPC_RESPAWN_DELAY = 300;
 
+/** Puts an opponent into crash animation state and plays SFX (called from player–NPC collision). */
 function crashNPCCar(car, impactSpeed, lateralDir) {
     car.crashed = true;
     car.crashTimer = 0;
@@ -1404,6 +1531,12 @@ function crashNPCCar(car, impactSpeed, lateralDir) {
 
 let _dirtyCarSegments = [];
 
+/**
+ * Clears/rebuilds per-segment `cars` lists, advances AI (speed, curve, ramps, laps), handles crash/recovery.
+ * Player overlap → soft bump or mutual crash; sets raceOver if an opponent finishes RACE_LAPS first.
+ * @param {object} trackState - Result of getTrackState() for the player (Z overlap and in-air checks).
+ * @param {number} dt60 - Delta time scaled to 60 FPS units.
+ */
 function updateNPCsAndCheckCollision(trackState, dt60) {
     const maxZ = segments.length * segmentLength;
     for (let i = 0; i < _dirtyCarSegments.length; i++) _dirtyCarSegments[i].cars = [];
@@ -1441,22 +1574,76 @@ function updateNPCsAndCheckCollision(trackState, dt60) {
                 car.crashY = 0;
                 car.airY = 0;
                 car.airVelY = 0;
-                car.speed = car.originalSpeed;
-                car.offset = car.dir === -1
-                    ? -(0.25 + Math.random() * 0.4)
-                    : 0.25 + Math.random() * 0.6;
-                const playerZ = position % maxZ;
-                car.z = (playerZ + 4000 + Math.random() * 6000) % maxZ;
+                car.npcGear = 1;
+                car.speed = Math.min(maxSpeed * 0.95, playerAvgSpeed * car.targetSpeedFactor);
+                car.originalSpeed = car.speed;
+                car.offset = Math.max(-NPC_ROAD_OFFSET_MAX, Math.min(NPC_ROAD_OFFSET_MAX, car.offset));
             }
             continue;
         }
 
-        car.z += car.dir * car.speed * dt60;
-        if (car.z < 0) car.z += maxZ;
-        if (car.z >= maxZ) car.z -= maxZ;
+        let carSegIdx = Math.floor(car.z / segmentLength) % segments.length;
+        let carSeg = segments[carSegIdx];
+        const elapsed = (Date.now() - raceStartTime) / 1000;
+        if (elapsed < car.startDelay) {
+            carSeg.cars.push(car);
+            _dirtyCarSegments.push(carSeg);
+            continue;
+        }
+        const targetSpeed = Math.max(60, Math.min(maxSpeed * 0.96, playerAvgSpeed * car.targetSpeedFactor));
 
-        const carSegIdx = Math.floor(car.z / segmentLength) % segments.length;
-        const carSeg = segments[carSegIdx];
+        // NPC gear simulation
+        const npcGearMax = GEAR_MAX_SPEEDS[car.npcGear - 1];
+        if (car.speed > npcGearMax * 0.95 && car.npcGear < NUM_GEARS) car.npcGear++;
+        if (car.npcGear > 1 && car.speed < GEAR_MIN_SPEEDS[car.npcGear - 1] * 0.8) car.npcGear--;
+        const npcAccel = GEAR_ACCEL_RATES[car.npcGear - 1];
+        const npcGearMaxSpeed = GEAR_MAX_SPEEDS[car.npcGear - 1];
+
+        if (car.speed < targetSpeed) {
+            car.speed = Math.min(car.speed + npcAccel * 0.85 * dt60, npcGearMaxSpeed);
+        } else {
+            car.speed = Math.max(car.speed - GEAR_COAST_DECEL[car.npcGear - 1] * dt60, targetSpeed * 0.9);
+        }
+        car.speed = Math.max(30, Math.min(maxSpeed * 0.98, car.speed));
+
+        car.speed = Math.max(0, car.speed - AERO_DRAG * car.speed * car.speed * dt60);
+        const nextSeg = segments[(carSegIdx + 1) % segments.length];
+        const slope = (nextSeg.y - carSeg.y) / segmentLength;
+        car.speed = Math.max(0, car.speed + (-slope * SLOPE_GRAVITY_FACTOR) * dt60);
+
+        const npcShoulderDepth = Math.max(0, Math.abs(car.offset) - ROAD_EDGE);
+        const npcShoulderFactor = Math.min(1, npcShoulderDepth * SHOULDER_GRIP_FALLOFF);
+        if (npcShoulderFactor > 0 && car.speed > 0) {
+            const shoulderMax = Math.max(10, SHOULDER_MAX_SPEED * (1 - npcShoulderFactor * 0.5));
+            if (car.speed > shoulderMax) car.speed = Math.max(shoulderMax, car.speed - (3 + npcShoulderFactor * 4) * dt60);
+        }
+
+        car.offset -= curveForceMagnitude(carSeg.curve, car.speed, 1) * dt60;
+        car.offset += (0 - car.offset) * NPC_CENTERING_RATE * dt60;
+
+        // Inter-NPC collision avoidance
+        for (let j = 0; j < cars.length; j++) {
+            if (j === i || cars[j].crashed) continue;
+            const other = cars[j];
+            const dzNpc = Math.abs(car.z - other.z);
+            if (dzNpc < 300 && Math.abs(car.offset - other.offset) < 0.25) {
+                const dodgeDir = car.offset >= other.offset ? 1 : -1;
+                car.offset += dodgeDir * 0.03 * dt60;
+                if (dzNpc < 150 && car.speed > other.speed) car.speed -= 0.5 * dt60;
+            }
+        }
+
+        car.offset = Math.max(-NPC_ROAD_OFFSET_MAX, Math.min(NPC_ROAD_OFFSET_MAX, car.offset));
+
+        car.z += car.dir * car.speed * dt60;
+        if (car.z >= maxZ) {
+            car.lap++;
+            car.z = car.z % maxZ;
+        }
+        if (car.z < 0) car.z += maxZ;
+
+        carSegIdx = Math.floor(car.z / segmentLength) % segments.length;
+        carSeg = segments[carSegIdx];
 
         if (!car.airY && car.airVelY <= 0 && carSeg.rampTakeoff && car.speed > 20) {
             const launchMul = Math.min(1, car.speed / 150);
@@ -1464,7 +1651,7 @@ function updateNPCsAndCheckCollision(trackState, dt60) {
         }
 
         if (car.airVelY > 0 || car.airY > 0) {
-            car.airVelY -= NPC_AIR_GRAVITY * dt60;
+            car.airVelY -= GRAVITY_JUMP * dt60;
             car.airY += car.airVelY * dt60;
             if (car.airY <= 0) {
                 car.airY = 0;
@@ -1475,7 +1662,8 @@ function updateNPCsAndCheckCollision(trackState, dt60) {
         carSeg.cars.push(car);
         _dirtyCarSegments.push(carSeg);
 
-        const distToPlayerZ = Math.abs(car.z - (position % maxZ + COLLISION_Z_OFFSET));
+        const playerZ = position % maxZ;
+        const distToPlayerZ = Math.abs(car.z - playerZ);
         const playerInAir = playerY > trackState.trackElevation + IN_AIR_THRESHOLD || playerVelY > 25;
         if (distToPlayerZ >= COLLISION_Z_RANGE || playerInAir) continue;
         if (Math.abs(playerX - car.offset) >= COLLISION_PLAYER_CAR_X) continue;
@@ -1487,7 +1675,7 @@ function updateNPCsAndCheckCollision(trackState, dt60) {
             const impactSpeed = speed + car.speed;
             crashNPCCar(car, impactSpeed, lateralDir);
             isCrashed = true;
-            playerVelY = 300 + (speed * 4);
+            playerVelY = 300 + speed * 4;
             crashSpinSpeed = 0.05 + (speed / maxSpeed) * 0.4;
         } else {
             const impactSpeed = Math.max(0, speed - car.speed);
@@ -1505,19 +1693,52 @@ function updateNPCsAndCheckCollision(trackState, dt60) {
             }
         }
     }
+
+    if (!raceOver) {
+        for (let i = 0; i < cars.length; i++) {
+            if (cars[i].lap >= RACE_LAPS) {
+                raceOver = true;
+                raceWinner = 'opponent';
+                raceWinnerName = cars[i].name;
+                break;
+            }
+        }
+    }
 }
 
 // --- Game Loop ---
 
 /**
- * Haupt-Game-Loop (per requestAnimationFrame). Aktualisiert Crash-Zustand, Rundenzeit,
- * Kollisionen, Beschleunigung/Lenkung/Handbremse, Position/Hoehe, Motorsound und rendert einen Frame.
+ * Main loop (requestAnimationFrame). Branches: race over, crash recovery, else lap wrap + physics + collisions + render.
+ * Uses trackStateNext for consistent “in air” vs ground speed/slope after integrating position.
  */
 function update(timestamp) {
     if (!lastTimestamp) lastTimestamp = timestamp || performance.now();
     const dtRaw = Math.min(((timestamp || performance.now()) - lastTimestamp) / 1000, 0.05);
     lastTimestamp = timestamp || performance.now();
     const dt60 = dtRaw * TARGET_FPS;
+
+    if (raceOver) {
+        updateEngineSound(computeRpm(speed, currentGear), keys.ArrowUp ? 1 : 0);
+        render();
+        requestAnimationFrame(update);
+        return;
+    }
+
+    if (countdownActive) {
+        const remaining = (countdownEnd - Date.now()) / 1000;
+        if (remaining <= 0) {
+            countdownActive = false;
+            raceStartTime = Date.now();
+            lapStartTime = Date.now();
+        } else {
+            speed = 0;
+            updateEngineSound(RPM_IDLE + (remaining < 0.5 ? 2000 : 0), 0);
+            render();
+            requestAnimationFrame(update);
+            return;
+        }
+    }
 
     if (isCrashed) {
         crashRot += crashSpinSpeed * dt60;
@@ -1540,6 +1761,7 @@ function update(timestamp) {
             currentGear = 1;
             steeringVel = 0;
             handbrakeAmount = 0;
+            wasInAirPreviousFrame = false;
         }
 
         updateEngineSound(RPM_IDLE, 0);
@@ -1554,29 +1776,46 @@ function update(timestamp) {
         currentLap++;
         lapStartTime = Date.now();
         position = position % trackLength;
+        if (currentLap >= RACE_LAPS && !raceOver) {
+            raceOver = true;
+            raceWinner = 'player';
+        }
     }
     currentLapTime = (Date.now() - lapStartTime) / 1000;
+
+    playerSpeedSamples.push(speed);
+    if (playerSpeedSamples.length > PLAYER_SPEED_SAMPLES_MAX) playerSpeedSamples.shift();
+    if (playerSpeedSamples.length >= 30) {
+        let sum = 0;
+        for (let i = 0; i < playerSpeedSamples.length; i++) sum += playerSpeedSamples[i];
+        playerAvgSpeed = sum / playerSpeedSamples.length;
+    }
 
     let trackState = getTrackState(position);
     checkStaticObstacleCollision(trackState);
     if (!isCrashed) updateNPCsAndCheckCollision(trackState, dt60);
 
-    let { startSegIndex, offset, baseSeg, nextSeg, trackElevation } = trackState;
-    const inAir = playerY > trackElevation + IN_AIR_THRESHOLD;
+    const positionNext = position + speed * dt60;
+    const trackStateNext = getTrackState(positionNext);
+    const inAirThreshold = IN_AIR_THRESHOLD;
+    const inAirLandThreshold = 8;
+    const inAir = (playerY > trackStateNext.trackElevation + inAirThreshold) ||
+        (wasInAirPreviousFrame && playerY > trackStateNext.trackElevation + inAirLandThreshold);
+    wasInAirPreviousFrame = inAir;
 
-    // --- Handbremse (progressiv) ---
+    // --- Handbrake (progressive engage/release) ---
     if (keys.ShiftLeft) {
         handbrakeAmount = Math.min(1, handbrakeAmount + HANDBRAKE_ENGAGE_RATE * dtRaw);
     } else {
         handbrakeAmount = Math.max(0, handbrakeAmount - HANDBRAKE_RELEASE_RATE * dtRaw);
     }
 
-    // --- Seitenstreifen (progressiv) ---
+    // --- Road shoulders (ignored while airborne) ---
     const shoulderDepth = Math.max(0, Math.abs(playerX) - ROAD_EDGE);
     const shoulderFactor = Math.min(1, shoulderDepth * SHOULDER_GRIP_FALLOFF);
-    const onShoulder = shoulderFactor > 0;
+    const onShoulder = !inAir && shoulderFactor > 0;
 
-    // --- Gang, RPM, Redline ---
+    // --- Gear, RPM, redline limiter ---
     const gearMaxSpeed = GEAR_MAX_SPEEDS[currentGear - 1];
     const rpm = computeRpm(speed, currentGear);
 
@@ -1596,48 +1835,30 @@ function update(timestamp) {
         accelRate = Math.min(accelRate, SHOULDER_ACCEL);
     }
 
-    // --- Beschleunigung / Bremse / Motorbremse ---
-    const throttleEff = inAir ? AIR_THROTTLE_MUL : 1;
-    const brakeEff = inAir ? AIR_BRAKE_MUL : 1;
-
-    if (keys.ArrowUp) {
-        speed = Math.min(speed + accelRate * throttleEff * dt60, gearMaxSpeed);
-    } else if (keys.ArrowDown) {
-        const brakePower = BRAKE_DECEL * Math.min(1, 0.3 + 0.7 * speed / 60) * brakeEff;
-        speed = Math.max(0, speed - brakePower * dt60);
-    } else {
-        const coastDecel = GEAR_COAST_DECEL[currentGear - 1];
-        speed = Math.max(0, speed - coastDecel * dt60);
-    }
-
-    // --- Luftwiderstand (quadratisch) ---
-    speed = Math.max(0, speed - AERO_DRAG * speed * speed * dt60);
-
-    // --- Hangabtriebskraft (bergauf bremst, bergab beschleunigt) ---
+    // --- Speed (unchanged in air; on ground: throttle/brake/coast, drag, slope at next position) ---
     if (!inAir) {
-        const slope = (nextSeg.y - baseSeg.y) / segmentLength;
-        const slopeForce = -slope * SLOPE_GRAVITY_FACTOR;
-        speed = Math.max(0, speed + slopeForce * dt60);
-    }
-
-    // --- Handbremse Verzögerung ---
-    if (handbrakeAmount > 0 && speed > 0) {
-        speed = Math.max(0, speed - HANDBRAKE_DECEL * handbrakeAmount * dt60);
-    }
-
-    // --- Seitenstreifen Geschwindigkeitsreduktion ---
-    if (onShoulder) {
-        const shoulderMax = Math.max(10, SHOULDER_MAX_SPEED * (1 - shoulderFactor * 0.5));
-        if (speed > shoulderMax) {
-            speed = Math.max(shoulderMax, speed - (3 + shoulderFactor * 4) * dt60);
+        if (keys.ArrowUp) {
+            speed = Math.min(speed + accelRate * dt60, gearMaxSpeed);
+        } else if (keys.ArrowDown) {
+            const brakePower = BRAKE_DECEL * Math.min(1, 0.3 + 0.7 * speed / 60);
+            speed = Math.max(0, speed - brakePower * dt60);
+        } else {
+            speed = Math.max(0, speed - GEAR_COAST_DECEL[currentGear - 1] * dt60);
+        }
+        speed = Math.max(0, speed - AERO_DRAG * speed * speed * dt60);
+        const slope = (trackStateNext.nextSeg.y - trackStateNext.baseSeg.y) / segmentLength;
+        speed = Math.max(0, speed + (-slope * SLOPE_GRAVITY_FACTOR) * dt60);
+        if (handbrakeAmount > 0) speed = Math.max(0, speed - HANDBRAKE_DECEL * handbrakeAmount * dt60);
+        if (onShoulder) {
+            const shoulderMax = Math.max(10, SHOULDER_MAX_SPEED * (1 - shoulderFactor * 0.5));
+            if (speed > shoulderMax) speed = Math.max(shoulderMax, speed - (3 + shoulderFactor * 4) * dt60);
         }
     }
 
-    position += speed * dt60;
+    position = positionNext;
+    let { startSegIndex, offset, baseSeg, nextSeg, trackElevation } = trackStateNext;
 
-    ({ startSegIndex, offset, baseSeg, nextSeg, trackElevation } = getTrackState(position));
-
-    // --- Rampen-Absprung ---
+    // --- Ramp takeoff (launch vertical velocity at ramp peak) ---
     if (!isCrashed && baseSeg.rampTakeoff && playerY <= trackElevation + 120 && playerVelY <= 80 && speed > 30) {
         const launchMul = Math.min(1, speed / maxSpeed);
         playerVelY = RAMP_LAUNCH_VELOCITY * (0.5 + 0.5 * launchMul);
@@ -1657,41 +1878,38 @@ function update(timestamp) {
     if (playerY < trackElevation) {
         const impactVel = playerVelY;
         playerY = trackElevation;
-        if (wasInAir && impactVel < -LANDING_BOUNCE_THRESHOLD) {
-            playerVelY = Math.min(180, -impactVel * LANDING_BOUNCE_FACTOR);
-            const speedLoss = Math.abs(impactVel) * LANDING_SPEED_LOSS_FACTOR * speed;
-            speed = Math.max(0, speed - speedLoss);
-        } else if (wasInAir && Math.abs(impactVel) < CLEAN_LANDING_MAX_VEL) {
-            speed = Math.min(maxSpeed, speed + CLEAN_LANDING_BOOST);
-            playerVelY = 0;
-        } else {
-            playerVelY = 0;
+        playerVelY = 0;
+        if (wasInAir) {
+            if (impactVel < -LANDING_BOUNCE_THRESHOLD) {
+                playerVelY = Math.min(180, -impactVel * LANDING_BOUNCE_FACTOR);
+                speed = Math.max(0, speed - Math.abs(impactVel) * LANDING_SPEED_LOSS_FACTOR * speed);
+            } else if (Math.abs(impactVel) < CLEAN_LANDING_MAX_VEL) {
+                speed = Math.min(maxSpeed, speed + CLEAN_LANDING_BOOST);
+            }
         }
     }
 
-    // --- Kurvenfliehkraft (quadratisch) ---
+    // --- Centrifugal curve force (sky parallax tied to curve) ---
     let currentSeg = segments[startSegIndex];
     if (speed > 0) skyOffset += currentSeg.curve * (speed / maxSpeed) * 4 * dt60;
 
-    if (speed > 0 && !inAir) {
-        let curveForce = (currentSeg.curve * speed * speed) / CURVE_FORCE_DIVISOR;
-        if (speed < CURVE_FORCE_SPEED_THRESHOLD) {
-            curveForce *= speed / CURVE_FORCE_SPEED_THRESHOLD;
-        }
-        curveForce *= (1 + handbrakeAmount * (HANDBRAKE_CURVE_MUL - 1));
-        playerX -= curveForce * dt60;
+    if (!inAir && speed > 0) {
+        const handbrakeMul = 1 + handbrakeAmount * (HANDBRAKE_CURVE_MUL - 1);
+        playerX -= curveForceMagnitude(currentSeg.curve, speed, handbrakeMul) * dt60;
     }
 
-    // --- Lenkung mit Trägheit ---
-    const steerInput = (keys.ArrowLeft ? -1 : 0) + (keys.ArrowRight ? 1 : 0);
-    let steerFactor = Math.max(STEERING_MIN_FACTOR, speed / maxSpeed);
-    steerFactor *= (1 - handbrakeAmount * (1 - HANDBRAKE_STEERING_MUL));
-    if (inAir) steerFactor *= AIR_STEERING_MUL;
-
-    const steerTarget = steerInput * STEERING_FACTOR * steerFactor;
-    const lerpRate = steerInput !== 0 ? STEERING_ENGAGE_RATE : STEERING_RETURN_RATE;
-    steeringVel += (steerTarget - steeringVel) * Math.min(1, lerpRate * dt60);
-    playerX += steeringVel * dt60;
+    // --- Steering (frozen lateral input in air; damping only) ---
+    if (inAir) {
+        steeringVel *= 0.92;
+    } else {
+        const steerInput = (keys.ArrowLeft ? -1 : 0) + (keys.ArrowRight ? 1 : 0);
+        let steerFactor = Math.max(STEERING_MIN_FACTOR, speed / maxSpeed);
+        steerFactor *= (1 - handbrakeAmount * (1 - HANDBRAKE_STEERING_MUL));
+        const steerTarget = steerInput * STEERING_FACTOR * steerFactor;
+        const lerpRate = steerInput !== 0 ? STEERING_ENGAGE_RATE : STEERING_RETURN_RATE;
+        steeringVel += (steerTarget - steeringVel) * Math.min(1, lerpRate * dt60);
+        playerX += steeringVel * dt60;
+    }
 
     playerX = Math.max(-2.5, Math.min(2.5, playerX));
 
@@ -1702,6 +1920,7 @@ function update(timestamp) {
     requestAnimationFrame(update);
 }
 
+// --- Boot: load track JSON, build segments + opponents, start RAF loop ---
 loadTrackData()
     .then(data => {
         buildRoad(data || getDefaultTrack());
