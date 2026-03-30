@@ -61,7 +61,21 @@ if (gameContainer) {
     ro.observe(gameContainer);
 }
 
-// --- Player & world state (mutable each frame) ---
+// --- Player car rendering constants ---
+const PLAYER_CAR_W = 130;
+const PLAYER_CAR_H = 55;
+const PLAYER_CAR_BOTTOM_MARGIN = 20;
+const JUMP_HEIGHT_SCALE = 0.015;
+const ROLL_GROUND_THRESHOLD = 12;
+const PITCH_UP_ANGLE = -0.12;
+const PITCH_DOWN_ANGLE = 0.15;
+const AIR_ROAD_ROLL_SCALE = 0.012;
+const LANE_MARK_WIDTH_RATIO = 0.012;
+const LANE_MARK_INTERVAL = 4;
+
+// ---------------------------------------------------------------------------
+// Player physics (hot path – top-level for direct access every frame)
+// ---------------------------------------------------------------------------
 let position = 0;
 let playerX = 0;
 let speed = 0;
@@ -69,11 +83,10 @@ let playerY = 0;
 let playerVelY = 0;
 let skyOffset = 0;
 
-// Crash state (spin animation + brief invulnerability after reset)
+// Crash (spin animation + post-reset invulnerability)
 let isCrashed = false;
 let crashRot = 0;
 let crashSpinSpeed = 0;
-/** Timestamp of last crash reset (used for post-crash invulnerability window). */
 let crashResetAt = Date.now();
 
 /** Height above track (world Y) above which we count as in-air (no NPC/static collision). */
@@ -234,35 +247,42 @@ function computeRpm(speedKmh, gear) {
     );
 }
 
-// --- HUD & UI state ---
-let currentLap = 1;
-let currentLapTime = 0;
-let lastLapTime = 0;
-let lapStartTime = Date.now();
-
-// --- Race & opponents (first to 3 laps wins) ---
+// ---------------------------------------------------------------------------
+// Race & HUD state (reset together in buildRoad)
+// ---------------------------------------------------------------------------
 const RACE_LAPS = 3;
 const NUM_OPPONENTS = 10;
-let raceOver = false;
-let raceWinner = null;
-let raceWinnerName = null;
-let raceStartTime = 0;
-let countdownActive = true;
-let countdownEnd = 0;
 const COUNTDOWN_DURATION = 3;
-const playerSpeedSamples = [];
 const PLAYER_SPEED_SAMPLES_MAX = 90;
-let playerAvgSpeed = 110;
+
+const race = {
+    currentLap: 1,
+    currentLapTime: 0,
+    lastLapTime: 0,
+    lapStartTime: Date.now(),
+    over: false,
+    winner: null,
+    winnerName: null,
+    startTime: 0,
+    countdownActive: true,
+    countdownEnd: 0,
+    playerAvgSpeed: 110,
+    speedSamples: [],
+};
 
 let keys = { ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false, ShiftLeft: false };
 
-// --- Engine sound (Web Audio API, procedural) ---
-let engineSoundReady = false;
-let audioContext = null;
-let engineGainNode = null;
-let engineOsc1 = null;
-let engineOsc2 = null;
-let engineFilter = null;
+// ---------------------------------------------------------------------------
+// Audio state (Web Audio API nodes, lazily initialized on first input)
+// ---------------------------------------------------------------------------
+const audio = {
+    ready: false,
+    ctx: null,
+    gainNode: null,
+    osc1: null,
+    osc2: null,
+    filter: null,
+};
 
 /**
  * One-shot procedural crash SFX (noise, low thud, crunch). Called on obstacle/NPC collisions.
@@ -270,7 +290,7 @@ let engineFilter = null;
 function playCrashSound() {
     try {
         const Ctx = window.AudioContext || window.webkitAudioContext;
-        const ctx = audioContext || (Ctx && new Ctx());
+        const ctx = audio.ctx || (Ctx && new Ctx());
         if (!ctx) return;
         if (ctx.state === 'suspended') ctx.resume();
 
@@ -342,43 +362,43 @@ function playCrashSound() {
  * Called on first key/touch (browser autoplay policy). Idempotent.
  */
 function startEngineSound() {
-    if (engineSoundReady) return;
+    if (audio.ready) return;
     try {
         const Ctx = window.AudioContext || window.webkitAudioContext;
         if (!Ctx) return;
         const ctx = new Ctx();
-        audioContext = ctx;
+        audio.ctx = ctx;
         if (ctx.state === 'suspended') ctx.resume();
 
-        engineGainNode = ctx.createGain();
-        engineGainNode.gain.value = 0;
-        engineGainNode.connect(ctx.destination);
+        audio.gainNode = ctx.createGain();
+        audio.gainNode.gain.value = 0;
+        audio.gainNode.connect(ctx.destination);
 
-        engineOsc1 = ctx.createOscillator();
-        engineOsc1.type = 'sawtooth';
-        engineOsc1.frequency.value = 40;
-        engineOsc1.connect(engineGainNode);
-        engineOsc1.start(0);
+        audio.osc1 = ctx.createOscillator();
+        audio.osc1.type = 'sawtooth';
+        audio.osc1.frequency.value = 40;
+        audio.osc1.connect(audio.gainNode);
+        audio.osc1.start(0);
 
-        engineOsc2 = ctx.createOscillator();
-        engineOsc2.type = 'square';
-        engineOsc2.frequency.value = 60;
+        audio.osc2 = ctx.createOscillator();
+        audio.osc2.type = 'square';
+        audio.osc2.frequency.value = 60;
         const osc2Gain = ctx.createGain();
         osc2Gain.gain.value = 0.25;
-        engineOsc2.connect(osc2Gain);
-        osc2Gain.connect(engineGainNode);
-        engineOsc2.start(0);
+        audio.osc2.connect(osc2Gain);
+        osc2Gain.connect(audio.gainNode);
+        audio.osc2.start(0);
 
-        engineFilter = ctx.createBiquadFilter();
-        engineFilter.type = 'lowpass';
-        engineFilter.frequency.value = 400;
-        engineFilter.Q.value = 0.7;
-        engineGainNode.disconnect();
-        engineGainNode.connect(engineFilter);
-        engineFilter.connect(ctx.destination);
+        audio.filter = ctx.createBiquadFilter();
+        audio.filter.type = 'lowpass';
+        audio.filter.frequency.value = 400;
+        audio.filter.Q.value = 0.7;
+        audio.gainNode.disconnect();
+        audio.gainNode.connect(audio.filter);
+        audio.filter.connect(ctx.destination);
 
-        engineSoundReady = true;
-    } catch (_) { engineSoundReady = false; }
+        audio.ready = true;
+    } catch (_) { audio.ready = false; }
 }
 
 /**
@@ -387,13 +407,13 @@ function startEngineSound() {
  * @param {number} throttle - Throttle 0..1 (e.g. 1 when ArrowUp held).
  */
 function updateEngineSound(rpm, throttle) {
-    if (!engineSoundReady || !engineGainNode || !engineOsc1 || !engineOsc2) return;
+    if (!audio.ready || !audio.gainNode || !audio.osc1 || !audio.osc2) return;
     const baseFreq = 0.012 * rpm + 25;
-    engineOsc1.frequency.setTargetAtTime(baseFreq, 0, 0.02);
-    engineOsc2.frequency.setTargetAtTime(baseFreq * 1.5, 0, 0.02);
-    if (engineFilter) engineFilter.frequency.setTargetAtTime(200 + 0.04 * rpm, 0, 0.02);
+    audio.osc1.frequency.setTargetAtTime(baseFreq, 0, 0.02);
+    audio.osc2.frequency.setTargetAtTime(baseFreq * 1.5, 0, 0.02);
+    if (audio.filter) audio.filter.frequency.setTargetAtTime(200 + 0.04 * rpm, 0, 0.02);
     const vol = isCrashed ? 0 : (0.08 + 0.12 * throttle + 0.002 * (rpm / 1000));
-    engineGainNode.gain.setTargetAtTime(Math.min(0.35, vol), 0, 0.03);
+    audio.gainNode.gain.setTargetAtTime(Math.min(0.35, vol), 0, 0.03);
 }
 
 window.addEventListener('keydown', e => {
@@ -699,12 +719,12 @@ function buildRoad(trackData) {
     }
 
     const trackLength = segmentCount * segmentLength;
-    raceOver = false;
-    raceWinner = null;
-    raceWinnerName = null;
-    raceStartTime = Date.now();
-    countdownActive = true;
-    countdownEnd = Date.now() + COUNTDOWN_DURATION * 1000;
+    race.over = false;
+    race.winner = null;
+    race.winnerName = null;
+    race.startTime = Date.now();
+    race.countdownActive = true;
+    race.countdownEnd = Date.now() + COUNTDOWN_DURATION * 1000;
     cars = [];
     const opponentColors = ['#2266dd', '#dd6622', '#22aa44', '#aa22aa', '#ddcc22', '#22cccc', '#cc4422', '#6688dd', '#88dd66', '#dd88aa'];
     const baseTargetSpeed = Math.min(maxSpeed * 0.92, 200);
@@ -1257,7 +1277,7 @@ function drawHUD(displayRpm) {
     if (segments.length && cars.length) {
         const trackLen = segments.length * segmentLength;
         const playerZ = position % trackLen;
-        const entries = [{ lap: currentLap - 1, z: playerZ, isPlayer: true }];
+        const entries = [{ lap: race.currentLap - 1, z: playerZ, isPlayer: true }];
         for (let i = 0; i < cars.length; i++) {
             entries.push({ lap: cars[i].lap, z: cars[i].z, isPlayer: false });
         }
@@ -1267,36 +1287,36 @@ function drawHUD(displayRpm) {
     }
     const totalRacers = 1 + (cars.length || 0);
     ctx.fillStyle = '#FFF'; ctx.font = 'bold 20px "Courier New"'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
-    ctx.fillText(`LAP:  ${currentLap}/${RACE_LAPS}`, 25, 40);
+    ctx.fillText(`LAP:  ${race.currentLap}/${RACE_LAPS}`, 25, 40);
     ctx.fillText(`POS:  ${playerPosition}/${totalRacers}`, 25, 58);
-    ctx.fillText(`TIME: ${currentLapTime.toFixed(2)}s`, 25, 78);
-    if (lastLapTime > 0) { ctx.fillStyle = '#AAA'; ctx.fillText(`LAST: ${lastLapTime.toFixed(2)}s`, 25, 103); }
+    ctx.fillText(`TIME: ${race.currentLapTime.toFixed(2)}s`, 25, 78);
+    if (race.lastLapTime > 0) { ctx.fillStyle = '#AAA'; ctx.fillText(`LAST: ${race.lastLapTime.toFixed(2)}s`, 25, 103); }
     ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.font = 'bold 12px "Courier New"'; ctx.fillText('First to 3 laps wins', 25, 121);
 
     drawTrackOverview();
     drawTrackMap();
 
-    if (raceOver) {
+    if (race.over) {
         ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
         ctx.fillRect(0, 0, width, height);
         ctx.fillStyle = '#FFF';
         ctx.textAlign = 'center';
         ctx.font = 'bold 48px "Courier New"';
-        if (raceWinner === 'player') {
+        if (race.winner === 'player') {
             ctx.fillStyle = '#4a4';
             ctx.fillText('YOU WIN!', width / 2, height / 2 - 20);
             ctx.fillStyle = '#FFF'; ctx.font = 'bold 24px "Courier New"';
             ctx.fillText('First to 3 laps', width / 2, height / 2 + 30);
         } else {
             ctx.fillStyle = '#c44';
-            ctx.fillText(`OPPONENT ${raceWinnerName} WINS!`, width / 2, height / 2 - 20);
+            ctx.fillText(`OPPONENT ${race.winnerName} WINS!`, width / 2, height / 2 - 20);
             ctx.fillStyle = '#FFF'; ctx.font = 'bold 24px "Courier New"';
             ctx.fillText('First to 3 laps', width / 2, height / 2 + 30);
         }
     }
 
-    if (countdownActive) {
-        const remaining = (countdownEnd - Date.now()) / 1000;
+    if (race.countdownActive) {
+        const remaining = (race.countdownEnd - Date.now()) / 1000;
         const displayNum = Math.ceil(Math.max(0, remaining));
         const label = displayNum > 0 ? String(displayNum) : 'GO!';
         const pulse = 1 + Math.sin(remaining * Math.PI * 2) * 0.15;
@@ -1390,9 +1410,9 @@ function render() {
             drawQuad(seg.color.road, prev.p1.x, prev.p1.y, prev.p1.w, seg.p1.x, seg.p1.y, seg.p1.w);
 
             const segIdx = (startSegIndex + n) % segments.length;
-            if (Math.floor(segIdx / 4) % 2 === 0) {
-                const laneW1 = prev.p1.w * 0.012;
-                const laneW2 = seg.p1.w * 0.012;
+            if (Math.floor(segIdx / LANE_MARK_INTERVAL) % 2 === 0) {
+                const laneW1 = prev.p1.w * LANE_MARK_WIDTH_RATIO;
+                const laneW2 = seg.p1.w * LANE_MARK_WIDTH_RATIO;
                 drawQuad('#ddd', prev.p1.x, prev.p1.y, laneW1, seg.p1.x, seg.p1.y, laneW2);
                 drawQuad('#ddd', prev.p1.x - prev.p1.w * 0.5, prev.p1.y, laneW1, seg.p1.x - seg.p1.w * 0.5, seg.p1.y, laneW2);
                 drawQuad('#ddd', prev.p1.x + prev.p1.w * 0.5, prev.p1.y, laneW1, seg.p1.x + seg.p1.w * 0.5, seg.p1.y, laneW2);
@@ -1408,10 +1428,14 @@ function render() {
 
     drawRearViewMirror(startSegIndex, camX, camY, camZ);
 
-    const carW = 130; const carH = 55;
+    const carW = PLAYER_CAR_W;
+    const carH = PLAYER_CAR_H;
+    const carMargin = PLAYER_CAR_BOTTOM_MARGIN;
+    const carBaseY = height - carH - carMargin;
     let carX = width / 2 - carW / 2;
 
     let jumpHeight = Math.max(0, playerY - trackElevation);
+    const jumpOffset = jumpHeight * JUMP_HEIGHT_SCALE;
 
     const onShoulder = Math.abs(playerX) > ROAD_EDGE && !isCrashed;
 
@@ -1426,40 +1450,43 @@ function render() {
         const jitterY = Math.sin(_now * 0.073) * 1.5 + Math.sin(_now * 0.157) * 1;
         ctx.translate(jitterX, jitterY);
     }
-    const onGroundForRoll = jumpHeight < 12;
-    if (!isCrashed && onGroundForRoll && speed > 0) {
+    if (!isCrashed && jumpHeight < ROLL_GROUND_THRESHOLD && speed > 0) {
         const handbrakeMul = 1 + handbrakeAmount * (HANDBRAKE_CURVE_MUL - 1);
         const rollAngle = Math.max(-CURVE_ROLL_MAX, Math.min(CURVE_ROLL_MAX, curveForceMagnitude(baseSeg.curve, speed, handbrakeMul) * CURVE_ROLL_SCALE));
         if (Math.abs(rollAngle) > 0.008) {
             const cx = carX + carW / 2;
-            const cy = height - carH - 20 + bounce - (jumpHeight * 0.015) + carH / 2;
+            const cy = carBaseY + bounce - jumpOffset + carH / 2;
             ctx.translate(cx, cy);
             ctx.rotate(rollAngle);
             ctx.translate(-cx, -cy);
         }
     }
     if (isCrashed) {
-        let cx = carX + carW / 2;
-        let cy = (height - carH - 20) + carH / 2;
-        ctx.translate(cx, cy - jumpHeight * 0.015);
+        const cx = carX + carW / 2;
+        const cy = carBaseY + carH / 2;
+        ctx.translate(cx, cy - jumpOffset);
         ctx.rotate(crashRot);
-        ctx.translate(-cx, -(cy - jumpHeight * 0.015));
+        ctx.translate(-cx, -(cy - jumpOffset));
     } else if (jumpHeight > 0) {
         let pitchAngle = 0;
-        if (keys.ArrowUp) pitchAngle = -0.12;
-        else if (keys.ArrowDown) pitchAngle = 0.15;
-        const roadRollInAir = baseSeg.curve * 0.012;
+        if (keys.ArrowUp) pitchAngle = PITCH_UP_ANGLE;
+        else if (keys.ArrowDown) pitchAngle = PITCH_DOWN_ANGLE;
+        const roadRollInAir = baseSeg.curve * AIR_ROAD_ROLL_SCALE;
         const cx = carX + carW / 2;
-        const cy = height - carH - 20 - jumpHeight * 0.015 + carH / 2;
+        const cy = carBaseY - jumpOffset + carH / 2;
         ctx.translate(cx, cy);
         if (pitchAngle !== 0) ctx.rotate(pitchAngle);
         ctx.rotate(roadRollInAir);
         ctx.translate(-cx, -cy);
     }
-    const carY = height - carH - 20 + bounce - (jumpHeight * 0.015);
+    const carY = carBaseY + bounce - jumpOffset;
 
     if (jumpHeight > 0 && !isCrashed) {
-        ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.beginPath(); ctx.ellipse(carX + carW / 2, height - 20, Math.max(10, carW / 2 - jumpHeight * 0.01), 10, 0, 0, Math.PI * 2); ctx.fill();
+        const shadowY = height - carMargin;
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.beginPath();
+        ctx.ellipse(carX + carW / 2, shadowY, Math.max(10, carW / 2 - jumpHeight * 0.01), 10, 0, 0, Math.PI * 2);
+        ctx.fill();
     }
 
     ctx.fillStyle = '#111'; ctx.fillRect(carX - 8, carY + 15, 25, 30); ctx.fillRect(carX + carW - 17, carY + 15, 25, 30);
@@ -1533,7 +1560,7 @@ let _dirtyCarSegments = [];
 
 /**
  * Clears/rebuilds per-segment `cars` lists, advances AI (speed, curve, ramps, laps), handles crash/recovery.
- * Player overlap → soft bump or mutual crash; sets raceOver if an opponent finishes RACE_LAPS first.
+ * Player overlap → soft bump or mutual crash; sets race.over if an opponent finishes RACE_LAPS first.
  * @param {object} trackState - Result of getTrackState() for the player (Z overlap and in-air checks).
  * @param {number} dt60 - Delta time scaled to 60 FPS units.
  */
@@ -1575,7 +1602,7 @@ function updateNPCsAndCheckCollision(trackState, dt60) {
                 car.airY = 0;
                 car.airVelY = 0;
                 car.npcGear = 1;
-                car.speed = Math.min(maxSpeed * 0.95, playerAvgSpeed * car.targetSpeedFactor);
+                car.speed = Math.min(maxSpeed * 0.95, race.playerAvgSpeed * car.targetSpeedFactor);
                 car.originalSpeed = car.speed;
                 car.offset = Math.max(-NPC_ROAD_OFFSET_MAX, Math.min(NPC_ROAD_OFFSET_MAX, car.offset));
             }
@@ -1584,13 +1611,13 @@ function updateNPCsAndCheckCollision(trackState, dt60) {
 
         let carSegIdx = Math.floor(car.z / segmentLength) % segments.length;
         let carSeg = segments[carSegIdx];
-        const elapsed = (Date.now() - raceStartTime) / 1000;
+        const elapsed = (Date.now() - race.startTime) / 1000;
         if (elapsed < car.startDelay) {
             carSeg.cars.push(car);
             _dirtyCarSegments.push(carSeg);
             continue;
         }
-        const targetSpeed = Math.max(60, Math.min(maxSpeed * 0.96, playerAvgSpeed * car.targetSpeedFactor));
+        const targetSpeed = Math.max(60, Math.min(maxSpeed * 0.96, race.playerAvgSpeed * car.targetSpeedFactor));
 
         // NPC gear simulation
         const npcGearMax = GEAR_MAX_SPEEDS[car.npcGear - 1];
@@ -1694,12 +1721,12 @@ function updateNPCsAndCheckCollision(trackState, dt60) {
         }
     }
 
-    if (!raceOver) {
+    if (!race.over) {
         for (let i = 0; i < cars.length; i++) {
             if (cars[i].lap >= RACE_LAPS) {
-                raceOver = true;
-                raceWinner = 'opponent';
-                raceWinnerName = cars[i].name;
+                race.over = true;
+                race.winner = 'opponent';
+                race.winnerName = cars[i].name;
                 break;
             }
         }
@@ -1718,19 +1745,19 @@ function update(timestamp) {
     lastTimestamp = timestamp || performance.now();
     const dt60 = dtRaw * TARGET_FPS;
 
-    if (raceOver) {
+    if (race.over) {
         updateEngineSound(computeRpm(speed, currentGear), keys.ArrowUp ? 1 : 0);
         render();
         requestAnimationFrame(update);
         return;
     }
 
-    if (countdownActive) {
-        const remaining = (countdownEnd - Date.now()) / 1000;
+    if (race.countdownActive) {
+        const remaining = (race.countdownEnd - Date.now()) / 1000;
         if (remaining <= 0) {
-            countdownActive = false;
-            raceStartTime = Date.now();
-            lapStartTime = Date.now();
+            race.countdownActive = false;
+            race.startTime = Date.now();
+            race.lapStartTime = Date.now();
         } else {
             speed = 0;
             updateEngineSound(RPM_IDLE + (remaining < 0.5 ? 2000 : 0), 0);
@@ -1772,23 +1799,23 @@ function update(timestamp) {
 
     let trackLength = segments.length * segmentLength;
     if (position >= trackLength) {
-        lastLapTime = currentLapTime;
-        currentLap++;
-        lapStartTime = Date.now();
+        race.lastLapTime = race.currentLapTime;
+        race.currentLap++;
+        race.lapStartTime = Date.now();
         position = position % trackLength;
-        if (currentLap >= RACE_LAPS && !raceOver) {
-            raceOver = true;
-            raceWinner = 'player';
+        if (race.currentLap >= RACE_LAPS && !race.over) {
+            race.over = true;
+            race.winner = 'player';
         }
     }
-    currentLapTime = (Date.now() - lapStartTime) / 1000;
+    race.currentLapTime = (Date.now() - race.lapStartTime) / 1000;
 
-    playerSpeedSamples.push(speed);
-    if (playerSpeedSamples.length > PLAYER_SPEED_SAMPLES_MAX) playerSpeedSamples.shift();
-    if (playerSpeedSamples.length >= 30) {
+    race.speedSamples.push(speed);
+    if (race.speedSamples.length > PLAYER_SPEED_SAMPLES_MAX) race.speedSamples.shift();
+    if (race.speedSamples.length >= 30) {
         let sum = 0;
-        for (let i = 0; i < playerSpeedSamples.length; i++) sum += playerSpeedSamples[i];
-        playerAvgSpeed = sum / playerSpeedSamples.length;
+        for (let i = 0; i < race.speedSamples.length; i++) sum += race.speedSamples[i];
+        race.playerAvgSpeed = sum / race.speedSamples.length;
     }
 
     let trackState = getTrackState(position);
