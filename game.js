@@ -247,6 +247,9 @@ let raceOver = false;
 let raceWinner = null;
 let raceWinnerName = null;
 let raceStartTime = 0;
+let countdownActive = true;
+let countdownEnd = 0;
+const COUNTDOWN_DURATION = 3;
 const playerSpeedSamples = [];
 const PLAYER_SPEED_SAMPLES_MAX = 90;
 let playerAvgSpeed = 110;
@@ -700,6 +703,8 @@ function buildRoad(trackData) {
     raceWinner = null;
     raceWinnerName = null;
     raceStartTime = Date.now();
+    countdownActive = true;
+    countdownEnd = Date.now() + COUNTDOWN_DURATION * 1000;
     cars = [];
     const opponentColors = ['#2266dd', '#dd6622', '#22aa44', '#aa22aa', '#ddcc22', '#22cccc', '#cc4422', '#6688dd', '#88dd66', '#dd88aa'];
     const baseTargetSpeed = Math.min(maxSpeed * 0.92, 200);
@@ -714,7 +719,8 @@ function buildRoad(trackData) {
             name: String(i + 1),
             color: opponentColors[i % opponentColors.length],
             targetSpeedFactor: speedFactor,
-            startDelay: i * 0.45,
+            startDelay: COUNTDOWN_DURATION + i * 0.25,
+            npcGear: 1,
             crashed: false,
             crashRot: 0,
             crashSpin: 0,
@@ -1352,6 +1358,15 @@ function render() {
             ctx.fillStyle = seg.color.grass; ctx.fillRect(0, seg.p1.y, width, prev.p1.y - seg.p1.y);
             drawQuad(seg.color.rumble, prev.p1.x, prev.p1.y, prev.p1.w * 1.1, seg.p1.x, seg.p1.y, seg.p1.w * 1.1);
             drawQuad(seg.color.road, prev.p1.x, prev.p1.y, prev.p1.w, seg.p1.x, seg.p1.y, seg.p1.w);
+
+            const segIdx = (startSegIndex + n) % segments.length;
+            if (Math.floor(segIdx / 4) % 2 === 0) {
+                const laneW1 = prev.p1.w * 0.012;
+                const laneW2 = seg.p1.w * 0.012;
+                drawQuad('#ddd', prev.p1.x, prev.p1.y, laneW1, seg.p1.x, seg.p1.y, laneW2);
+                drawQuad('#ddd', prev.p1.x - prev.p1.w * 0.5, prev.p1.y, laneW1, seg.p1.x - seg.p1.w * 0.5, seg.p1.y, laneW2);
+                drawQuad('#ddd', prev.p1.x + prev.p1.w * 0.5, prev.p1.y, laneW1, seg.p1.x + seg.p1.w * 0.5, seg.p1.y, laneW2);
+            }
         }
         maxY = seg.p1.y;
     }
@@ -1544,9 +1559,20 @@ function updateNPCsAndCheckCollision(trackState, dt60) {
             continue;
         }
         const targetSpeed = Math.max(60, Math.min(maxSpeed * 0.96, playerAvgSpeed * car.targetSpeedFactor));
-        if (car.speed < 20) car.speed = Math.min(car.speed + 8 * dt60, targetSpeed * 0.3);
-        car.speed += (targetSpeed - car.speed) * 0.02 * dt60;
-        car.speed = Math.max(40, Math.min(maxSpeed * 0.98, car.speed));
+
+        // NPC gear simulation
+        const npcGearMax = GEAR_MAX_SPEEDS[car.npcGear - 1];
+        if (car.speed > npcGearMax * 0.95 && car.npcGear < NUM_GEARS) car.npcGear++;
+        if (car.npcGear > 1 && car.speed < GEAR_MIN_SPEEDS[car.npcGear - 1] * 0.8) car.npcGear--;
+        const npcAccel = GEAR_ACCEL_RATES[car.npcGear - 1];
+        const npcGearMaxSpeed = GEAR_MAX_SPEEDS[car.npcGear - 1];
+
+        if (car.speed < targetSpeed) {
+            car.speed = Math.min(car.speed + npcAccel * 0.85 * dt60, npcGearMaxSpeed);
+        } else {
+            car.speed = Math.max(car.speed - GEAR_COAST_DECEL[car.npcGear - 1] * dt60, targetSpeed * 0.9);
+        }
+        car.speed = Math.max(30, Math.min(maxSpeed * 0.98, car.speed));
 
         car.speed = Math.max(0, car.speed - AERO_DRAG * car.speed * car.speed * dt60);
         const nextSeg = segments[(carSegIdx + 1) % segments.length];
@@ -1562,6 +1588,19 @@ function updateNPCsAndCheckCollision(trackState, dt60) {
 
         car.offset -= curveForceMagnitude(carSeg.curve, car.speed, 1) * dt60;
         car.offset += (0 - car.offset) * NPC_CENTERING_RATE * dt60;
+
+        // Inter-NPC collision avoidance
+        for (let j = 0; j < cars.length; j++) {
+            if (j === i || cars[j].crashed) continue;
+            const other = cars[j];
+            const dzNpc = Math.abs(car.z - other.z);
+            if (dzNpc < 300 && Math.abs(car.offset - other.offset) < 0.25) {
+                const dodgeDir = car.offset >= other.offset ? 1 : -1;
+                car.offset += dodgeDir * 0.03 * dt60;
+                if (dzNpc < 150 && car.speed > other.speed) car.speed -= 0.5 * dt60;
+            }
+        }
+
         car.offset = Math.max(-NPC_ROAD_OFFSET_MAX, Math.min(NPC_ROAD_OFFSET_MAX, car.offset));
 
         car.z += car.dir * car.speed * dt60;
@@ -1591,7 +1630,6 @@ function updateNPCsAndCheckCollision(trackState, dt60) {
         carSeg.cars.push(car);
         _dirtyCarSegments.push(carSeg);
 
-        if (car.lap !== currentLap - 1) continue;
         const playerZ = position % maxZ;
         const distToPlayerZ = Math.abs(car.z - playerZ);
         const playerInAir = playerY > trackState.trackElevation + IN_AIR_THRESHOLD || playerVelY > 25;
