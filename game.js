@@ -677,7 +677,6 @@ function buildRoad(trackData) {
         }
 
         segments.push({
-            z: n * segmentLength,
             y: y,
             curve: curve,
             sprites: segmentSprites,
@@ -1370,11 +1369,15 @@ function render() {
 
     const onShoulder = Math.abs(playerX) > ROAD_EDGE && !isCrashed;
 
+    const _now = performance.now();
+    const bounce = (speed > 0 && jumpHeight === 0 && !isCrashed)
+        ? Math.sin(_now * 0.012) * 1.2 + Math.sin(_now * 0.029) * 0.6
+        : 0;
+
     ctx.save();
     if (onShoulder && speed > 0 && jumpHeight === 0) {
-        const t = performance.now();
-        const jitterX = Math.sin(t * 0.047) * 3 + Math.sin(t * 0.113) * 2;
-        const jitterY = Math.sin(t * 0.073) * 1.5 + Math.sin(t * 0.157) * 1;
+        const jitterX = Math.sin(_now * 0.047) * 3 + Math.sin(_now * 0.113) * 2;
+        const jitterY = Math.sin(_now * 0.073) * 1.5 + Math.sin(_now * 0.157) * 1;
         ctx.translate(jitterX, jitterY);
     }
     const onGroundForRoll = jumpHeight < 12;
@@ -1383,7 +1386,7 @@ function render() {
         const rollAngle = Math.max(-CURVE_ROLL_MAX, Math.min(CURVE_ROLL_MAX, curveForceMagnitude(baseSeg.curve, speed, handbrakeMul) * CURVE_ROLL_SCALE));
         if (Math.abs(rollAngle) > 0.008) {
             const cx = carX + carW / 2;
-            const cy = height - carH - 20 + (speed > 0 && !isCrashed ? Math.sin(performance.now() * 0.012) * 1.2 + Math.sin(performance.now() * 0.029) * 0.6 : 0) - (jumpHeight * 0.015) + carH / 2;
+            const cy = height - carH - 20 + bounce - (jumpHeight * 0.015) + carH / 2;
             ctx.translate(cx, cy);
             ctx.rotate(rollAngle);
             ctx.translate(-cx, -cy);
@@ -1407,8 +1410,6 @@ function render() {
         ctx.rotate(roadRollInAir);
         ctx.translate(-cx, -cy);
     }
-
-    const bounce = (speed > 0 && jumpHeight === 0 && !isCrashed) ? Math.sin(performance.now() * 0.012) * 1.2 + Math.sin(performance.now() * 0.029) * 0.6 : 0;
     const carY = height - carH - 20 + bounce - (jumpHeight * 0.015);
 
     if (jumpHeight > 0 && !isCrashed) {
@@ -1422,7 +1423,7 @@ function render() {
 
     ctx.restore();
 
-    const inAirForHUD = !isCrashed && (playerY - trackElevation > 60);
+    const inAirForHUD = !isCrashed && (playerY - trackElevation > IN_AIR_THRESHOLD);
     drawHUD(inAirForHUD ? RPM_IN_AIR : undefined);
 }
 
@@ -1563,7 +1564,7 @@ function updateNPCsAndCheckCollision(trackState, dt60) {
         car.offset += (0 - car.offset) * NPC_CENTERING_RATE * dt60;
         car.offset = Math.max(-NPC_ROAD_OFFSET_MAX, Math.min(NPC_ROAD_OFFSET_MAX, car.offset));
 
-        car.z += car.speed * dt60;
+        car.z += car.dir * car.speed * dt60;
         if (car.z >= maxZ) {
             car.lap++;
             car.z = car.z % maxZ;
@@ -1599,18 +1600,27 @@ function updateNPCsAndCheckCollision(trackState, dt60) {
         if (Date.now() - crashResetAt < CRASH_INVULN_MS) continue;
 
         const lateralDir = playerX >= car.offset ? 1 : -1;
-        const impactSpeed = Math.max(0, speed - car.speed);
-        if (impactSpeed > CRASH_SPEED_THRESHOLD) {
+
+        if (car.dir === -1) {
+            const impactSpeed = speed + car.speed;
             crashNPCCar(car, impactSpeed, lateralDir);
-            speed = Math.max(0, speed * 0.4);
-            if (impactSpeed > 120) {
-                isCrashed = true;
-                playerVelY = impactSpeed * 2;
-                crashSpinSpeed = 0.05 + (impactSpeed / maxSpeed) * 0.3;
-            }
+            isCrashed = true;
+            playerVelY = 300 + speed * 4;
+            crashSpinSpeed = 0.05 + (speed / maxSpeed) * 0.4;
         } else {
-            speed = Math.min(speed, car.speed);
-            playerX += lateralDir * 0.08;
+            const impactSpeed = Math.max(0, speed - car.speed);
+            if (impactSpeed > CRASH_SPEED_THRESHOLD) {
+                crashNPCCar(car, impactSpeed, lateralDir);
+                speed = Math.max(0, speed * 0.4);
+                if (impactSpeed > 120) {
+                    isCrashed = true;
+                    playerVelY = impactSpeed * 2;
+                    crashSpinSpeed = 0.05 + (impactSpeed / maxSpeed) * 0.3;
+                }
+            } else {
+                speed = Math.min(speed, car.speed);
+                playerX += lateralDir * 0.08;
+            }
         }
     }
 
