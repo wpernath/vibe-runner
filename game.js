@@ -719,7 +719,7 @@ function buildRoad(trackData) {
             name: String(i + 1),
             color: opponentColors[i % opponentColors.length],
             targetSpeedFactor: speedFactor,
-            startDelay: COUNTDOWN_DURATION + i * 0.25,
+            startDelay: i * 0.25,
             npcGear: 1,
             crashed: false,
             crashRot: 0,
@@ -1295,6 +1295,22 @@ function drawHUD(displayRpm) {
         }
     }
 
+    if (countdownActive) {
+        const remaining = (countdownEnd - Date.now()) / 1000;
+        const displayNum = Math.ceil(Math.max(0, remaining));
+        const label = displayNum > 0 ? String(displayNum) : 'GO!';
+        const pulse = 1 + Math.sin(remaining * Math.PI * 2) * 0.15;
+        ctx.save();
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+        ctx.fillRect(0, 0, width, height);
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = `bold ${Math.round(96 * pulse)}px "Courier New"`;
+        ctx.fillStyle = displayNum > 0 ? '#FFF' : '#4f4';
+        ctx.fillText(label, width / 2, height / 2);
+        ctx.restore();
+    }
+
     if (isCrashed) {
         ctx.fillStyle = 'rgba(255, 0, 0, 0.7)';
         ctx.fillRect(0, height / 2 - 50, width, 100);
@@ -1303,6 +1319,20 @@ function drawHUD(displayRpm) {
         ctx.font = 'bold 40px "Courier New"';
         ctx.fillText("CRASHED!", width / 2, height / 2 + 15);
     }
+}
+
+// --- Sprite draw pool (avoids per-frame allocation) ---
+const _spritePool = [];
+let _spriteCount = 0;
+
+function _pushSprite(type, data, x, y, w, clipY) {
+    if (_spriteCount < _spritePool.length) {
+        const s = _spritePool[_spriteCount];
+        s.type = type; s.data = data; s.x = x; s.y = y; s.w = w; s.clipY = clipY;
+    } else {
+        _spritePool.push({ type, data, x, y, w, clipY });
+    }
+    _spriteCount++;
 }
 
 // --- Main frame render ---
@@ -1323,7 +1353,7 @@ function render() {
     drawParallaxLayers(horizonY);
 
     let x = 0, dx = 0, maxY = height;
-    let spritesToDraw = [];
+    _spriteCount = 0;
 
     const _projTmp = { x: 0, y: 0, w: 0 };
 
@@ -1338,7 +1368,7 @@ function render() {
         for (let i = 0; i < seg.sprites.length; i++) {
             project(_projTmp, currentCurveX + seg.sprites[i].offset * roadWidth, seg.y, segZ, camX, camY, camZ - (n === 0 ? offset : 0));
             if (_projTmp.x > -1000 && _projTmp.x < width + 1000) {
-                spritesToDraw.push({ type: seg.sprites[i].type, data: seg.sprites[i].data, x: _projTmp.x, y: _projTmp.y, w: _projTmp.w, clipY: maxY });
+                _pushSprite(seg.sprites[i].type, seg.sprites[i].data, _projTmp.x, _projTmp.y, _projTmp.w, maxY);
             }
         }
 
@@ -1348,7 +1378,7 @@ function render() {
             project(_projTmp, currentCurveX + car.offset * roadWidth, seg.y, carVisualZ, camX, camY, camZ - (n === 0 ? offset : 0));
 
             if (_projTmp.x > -1000 && _projTmp.x < width + 1000) {
-                spritesToDraw.push({ type: 'NPC_CAR', data: car, x: _projTmp.x, y: _projTmp.y, w: _projTmp.w, clipY: maxY });
+                _pushSprite('NPC_CAR', car, _projTmp.x, _projTmp.y, _projTmp.w, maxY);
             }
         }
 
@@ -1371,8 +1401,9 @@ function render() {
         maxY = seg.p1.y;
     }
 
-    for (let i = spritesToDraw.length - 1; i >= 0; i--) {
-        drawProceduralSprite(spritesToDraw[i], spritesToDraw[i].x, spritesToDraw[i].y, spritesToDraw[i].w, spritesToDraw[i].clipY);
+    for (let i = _spriteCount - 1; i >= 0; i--) {
+        const s = _spritePool[i];
+        drawProceduralSprite(s, s.x, s.y, s.w, s.clipY);
     }
 
     drawRearViewMirror(startSegIndex, camX, camY, camZ);
@@ -1543,6 +1574,7 @@ function updateNPCsAndCheckCollision(trackState, dt60) {
                 car.crashY = 0;
                 car.airY = 0;
                 car.airVelY = 0;
+                car.npcGear = 1;
                 car.speed = Math.min(maxSpeed * 0.95, playerAvgSpeed * car.targetSpeedFactor);
                 car.originalSpeed = car.speed;
                 car.offset = Math.max(-NPC_ROAD_OFFSET_MAX, Math.min(NPC_ROAD_OFFSET_MAX, car.offset));
@@ -1691,6 +1723,21 @@ function update(timestamp) {
         render();
         requestAnimationFrame(update);
         return;
+    }
+
+    if (countdownActive) {
+        const remaining = (countdownEnd - Date.now()) / 1000;
+        if (remaining <= 0) {
+            countdownActive = false;
+            raceStartTime = Date.now();
+            lapStartTime = Date.now();
+        } else {
+            speed = 0;
+            updateEngineSound(RPM_IDLE + (remaining < 0.5 ? 2000 : 0), 0);
+            render();
+            requestAnimationFrame(update);
+            return;
+        }
     }
 
     if (isCrashed) {
