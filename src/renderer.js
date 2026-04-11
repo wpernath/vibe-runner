@@ -75,25 +75,62 @@ function drawQuad(color, x1, y1, w1, x2, y2, w2) {
 
 // --- Rear-view mirror ---
 
+const _mirrorSpritePool = [];
+let _mirrorSpriteCount = 0;
+let _mirrorFrame = 0;
+let _mirrorCanvas = null;
+
+function _pushMirrorSprite(type, data, x, y, w, clipY) {
+    if (_mirrorSpriteCount < _mirrorSpritePool.length) {
+        const s = _mirrorSpritePool[_mirrorSpriteCount];
+        s.type = type; s.data = data; s.x = x; s.y = y; s.w = w; s.clipY = clipY;
+    } else {
+        _mirrorSpritePool.push({ type, data, x, y, w, clipY });
+    }
+    _mirrorSpriteCount++;
+}
+
+const MIRROR_SPRITE_MIN_W = 3;
+
 function drawRearViewMirror(startSegIndex, camX, camY, camZ) {
     if (!world.segments.length) return;
     const mirrorX = Math.floor(width / 2 - MIRROR_W / 2);
+
+    // Render every other frame into an offscreen buffer
+    _mirrorFrame++;
+    if (_mirrorFrame % 2 === 0 && _mirrorCanvas) {
+        ctx.drawImage(_mirrorCanvas, mirrorX, MIRROR_Y);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(mirrorX, MIRROR_Y, MIRROR_W, MIRROR_H);
+        return;
+    }
+
+    if (!_mirrorCanvas) {
+        _mirrorCanvas = document.createElement('canvas');
+        _mirrorCanvas.width = MIRROR_W;
+        _mirrorCanvas.height = MIRROR_H;
+    }
+    const mctx = _mirrorCanvas.getContext('2d');
+    const savedCtx = ctx;
+    ctx = mctx;
+
     const L = world.segments.length;
-    const centerX = mirrorX + MIRROR_W / 2;
-    const centerY = MIRROR_Y + MIRROR_H / 2;
+    const centerX = MIRROR_W / 2;
+    const centerY = MIRROR_H / 2;
 
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(mirrorX, MIRROR_Y, MIRROR_W, MIRROR_H);
-    ctx.clip();
-
+    ctx.clearRect(0, 0, MIRROR_W, MIRROR_H);
     ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
-    ctx.fillRect(mirrorX, MIRROR_Y, MIRROR_W, MIRROR_H);
+    ctx.fillRect(0, 0, MIRROR_W, MIRROR_H);
 
     const _pNear = { x: 0, y: 0, w: 0 };
     const _pFar = { x: 0, y: 0, w: 0 };
+    const _pSprite = { x: 0, y: 0, w: 0 };
     let xBack = 0;
-    let maxY = MIRROR_Y + MIRROR_H;
+    let maxY = MIRROR_H;
+    const trackLength = L * segmentLength;
+    const mirrorClipH = MIRROR_H;
+    _mirrorSpriteCount = 0;
 
     for (let n = 1; n <= MIRROR_SEGMENTS; n++) {
         const s = (startSegIndex - n + L * 100) % L;
@@ -112,67 +149,62 @@ function drawRearViewMirror(startSegIndex, camX, camY, camZ) {
 
         if (_pNear.y >= maxY && _pFar.y >= maxY) continue;
 
+        // Early exit: road filled the mirror vertically
+        if (maxY <= 0) break;
+
         ctx.fillStyle = seg.color.grass;
         const topY = Math.min(_pNear.y, _pFar.y);
-        if (maxY > topY) ctx.fillRect(mirrorX, topY, MIRROR_W, maxY - topY);
+        if (maxY > topY) ctx.fillRect(0, topY, MIRROR_W, maxY - topY);
         maxY = topY;
 
         drawQuad(seg.color.rumble, _pNear.x, _pNear.y, _pNear.w * 1.1, _pFar.x, _pFar.y, _pFar.w * 1.1);
         drawQuad(seg.color.road, _pNear.x, _pNear.y, _pNear.w, _pFar.x, _pFar.y, _pFar.w);
-    }
 
-    const trackLength = L * segmentLength;
-    const mirrorClipY = MIRROR_Y + MIRROR_H;
-    const _pSprite = { x: 0, y: 0, w: 0 };
-    const mirrorSprites = [];
-    let xBackAcc = 0;
-    const xFarByN = [];
-    const xNearByN = [];
-    for (let n = 1; n <= MIRROR_SEGMENTS; n++) {
-        const s = (startSegIndex - n + L * 100) % L;
-        const seg = world.segments[s];
-        xBackAcc -= seg.curve;
-        xFarByN[n] = xBackAcc;
-        xNearByN[n] = xBackAcc + seg.curve;
-    }
-
-    for (let n = 1; n <= MIRROR_SEGMENTS; n++) {
-        const s = (startSegIndex - n + L * 100) % L;
-        const seg = world.segments[s];
-        const farZ = s * segmentLength;
-        const xNear = xNearByN[n];
-        const xFar = xFarByN[n];
-
-        for (let i = 0; i < seg.sprites.length; i++) {
-            const sprite = seg.sprites[i];
-            const worldX = xFar + sprite.offset * roadWidth;
-            projectRear(_pSprite, worldX, seg.y, farZ, camX, camY, camZ, centerX, centerY, MIRROR_W, MIRROR_H);
-            if (_pSprite.x >= mirrorX - 50 && _pSprite.x <= mirrorX + MIRROR_W + 50 && _pSprite.y >= MIRROR_Y - 20 && _pSprite.y <= mirrorClipY + 20) {
-                mirrorSprites.push({ type: sprite.type, data: sprite.data, x: _pSprite.x, y: _pSprite.y, w: _pSprite.w });
+        // Collect sprites only if segment is large enough to see
+        if (_pFar.w >= MIRROR_SPRITE_MIN_W) {
+            for (let i = 0; i < seg.sprites.length; i++) {
+                const sprite = seg.sprites[i];
+                const worldX = xFar + sprite.offset * roadWidth;
+                projectRear(_pSprite, worldX, seg.y, farZ, camX, camY, camZ, centerX, centerY, MIRROR_W, MIRROR_H);
+                if (_pSprite.x >= -50 && _pSprite.x <= MIRROR_W + 50 && _pSprite.y >= -20 && _pSprite.y <= mirrorClipH + 20) {
+                    _pushMirrorSprite(sprite.type, sprite.data, _pSprite.x, _pSprite.y, _pSprite.w, mirrorClipH);
+                }
             }
         }
 
+        // NPC cars are always relevant (gameplay info)
         for (let i = 0; i < seg.cars.length; i++) {
             const car = seg.cars[i];
             const zBehind = (camZ - car.z + trackLength) % trackLength;
             if (zBehind <= 0 || zBehind > MIRROR_SEGMENTS * segmentLength) continue;
             const t = (car.z - s * segmentLength) / segmentLength;
             const roadX = xFar + t * (xNear - xFar) + car.offset * roadWidth;
-            const segY = seg.y;
-            projectRearByDistance(_pSprite, roadX, segY, zBehind, camX, camY, centerX, centerY, MIRROR_W, MIRROR_H);
-            if (_pSprite.x >= mirrorX - 50 && _pSprite.x <= mirrorX + MIRROR_W + 50 && _pSprite.y >= MIRROR_Y - 20 && _pSprite.y <= mirrorClipY + 20) {
-                mirrorSprites.push({ type: 'NPC_CAR', data: car, x: _pSprite.x, y: _pSprite.y, w: _pSprite.w });
+            projectRearByDistance(_pSprite, roadX, seg.y, zBehind, camX, camY, centerX, centerY, MIRROR_W, MIRROR_H);
+            if (_pSprite.x >= -50 && _pSprite.x <= MIRROR_W + 50 && _pSprite.y >= -20 && _pSprite.y <= mirrorClipH + 20) {
+                _pushMirrorSprite('NPC_CAR', car, _pSprite.x, _pSprite.y, _pSprite.w, mirrorClipH);
             }
         }
     }
 
-    mirrorSprites.sort((a, b) => b.y - a.y);
-    for (let i = 0; i < mirrorSprites.length; i++) {
-        const o = mirrorSprites[i];
-        drawProceduralSprite(ctx, width, { type: o.type, data: o.data }, o.x, o.y, o.w, mirrorClipY);
+    // Sort back-to-front and draw
+    const pool = _mirrorSpritePool;
+    const count = _mirrorSpriteCount;
+    for (let i = 0; i < count; i++) pool[i]._sort = pool[i].y;
+    // Simple insertion sort (faster than Array.sort for small N, no allocation)
+    for (let i = 1; i < count; i++) {
+        const tmp = pool[i];
+        let j = i - 1;
+        while (j >= 0 && pool[j]._sort < tmp._sort) { pool[j + 1] = pool[j]; j--; }
+        pool[j + 1] = tmp;
     }
 
-    ctx.restore();
+    for (let i = 0; i < count; i++) {
+        const o = pool[i];
+        drawProceduralSprite(ctx, MIRROR_W, o, o.x, o.y, o.w, mirrorClipH);
+    }
+
+    ctx = savedCtx;
+    ctx.drawImage(_mirrorCanvas, mirrorX, MIRROR_Y);
 
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
     ctx.lineWidth = 2;

@@ -140,4 +140,4 @@ export const COLORS = {
 export const MIRROR_W = 200;
 export const MIRROR_H = 95;
 export const MIRROR_Y = 12;
-export const MIRROR_SEGMENTS = 100;
+export const MIRROR_SEGMENTS = 50;
