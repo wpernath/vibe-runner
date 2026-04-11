@@ -8,6 +8,7 @@ COPY nginx.conf /etc/nginx/conf.d/default.conf
 
 # Copy static assets
 COPY run.html game.js style.css /usr/share/nginx/html/
+COPY src/ /usr/share/nginx/html/src/
 COPY data/ /usr/share/nginx/html/data/
 
 # Ensure nginx can read the files (image runs as nginx, UID 101)
